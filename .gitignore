@@ -1,0 +1,15 @@
+node_modules/
+.build/
+dist/
+coverage/
+artifacts/
+.DS_Store
+*.pem
+*.key
+*.p12
+*.mobileprovision
+Safari/Lectio Sync/
+web-ext-artifacts/
+.env
+.env.*
+!.env.example
