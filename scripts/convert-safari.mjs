@@ -53,6 +53,15 @@ for (const platform of ["iOS", "macOS"]) {
 
 const projectFile = resolve(projectRoot, "Lectio Sync.xcodeproj/project.pbxproj");
 let project = await readFile(projectFile, "utf8");
+const { version } = JSON.parse(await readFile(resolve("package.json"), "utf8"));
+if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+  throw new Error("package.json version must use MAJOR.MINOR.PATCH format.");
+}
+const defaultMarketingVersion = "MARKETING_VERSION = 1.0;";
+if (!project.includes(defaultMarketingVersion)) {
+  throw new Error("Could not find Xcode's default marketing version.");
+}
+project = project.replaceAll(defaultMarketingVersion, `MARKETING_VERSION = ${version};`);
 for (const target of ["App", "Extension"]) {
   const infoPlist = `\t\t\t\tINFOPLIST_FILE = "macOS (${target})/Info.plist";`;
   const signing = [
