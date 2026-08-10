@@ -182,19 +182,23 @@ describe("sync engine", () => {
     expect(googleMock.apply).not.toHaveBeenCalled();
   });
 
-  it("falls back to schedule data if an activity detail page is unrecognized", async () => {
+  it("does not touch Google if an activity detail page is unrecognized", async () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(htmlResponse(scheduleHtml))
       .mockResolvedValueOnce(htmlResponse(emptyHtml))
       .mockResolvedValueOnce(htmlResponse(emptyHtml))
       .mockResolvedValueOnce(htmlResponse("<html><body>Maintenance</body></html>")));
 
-    await expect(runSync()).resolves.toMatchObject({ inserted: 1 });
-    expect(googleMock.listManaged).toHaveBeenCalledOnce();
-    expect(googleMock.apply.mock.calls[0]![1][0]).toMatchObject({
-      kind: "insert",
-      event: { summary: "3x Mathematics" }
-    });
+    await expect(runSync()).rejects.toMatchObject({ code: "LECTIO_UNEXPECTED_PAGE" });
+    expect(googleMock.listManaged).not.toHaveBeenCalled();
+    expect(googleMock.apply).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized Lectio page before calendar access", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse("A".repeat(2_000_001))));
+    await expect(runSync()).rejects.toMatchObject({ code: "LECTIO_UNEXPECTED_PAGE" });
+    expect(googleMock.listManaged).not.toHaveBeenCalled();
+    expect(googleMock.apply).not.toHaveBeenCalled();
   });
 
   it("classifies a rejected Google token and leaves snapshots unchanged", async () => {
@@ -209,6 +213,19 @@ describe("sync engine", () => {
       status: "google_disconnected",
       sourceSnapshots: { keep: { fingerprint: "old" } }
     });
+  });
+
+  it("reports that a failed Google apply may have committed earlier operations", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    googleMock.apply.mockRejectedValueOnce(new GoogleApiError(500, "later operation failed"));
+
+    await expect(runSync()).rejects.toMatchObject({
+      code: "GOOGLE_API",
+      calendarMayHaveChanged: true,
+      message: expect.stringContaining("Some changes may have been applied")
+    });
+    expect(storageMock.state?.lastError).toMatchObject({ calendarMayHaveChanged: true });
+    expect(storageMock.state?.sourceSnapshots).toEqual({});
   });
 
   it("checks disjoint week windows and deduplicates provider events", async () => {
@@ -234,10 +251,10 @@ describe("sync engine", () => {
     await expect(connectCalendar(true)).resolves.toMatchObject({ googleCalendarId: "new", status: "ready" });
     expect(googleMock.ensureConnected).toHaveBeenCalledWith(true, undefined);
 
-    storageMock.state!.settings.intervalMinutes = 5;
+    storageMock.state!.settings.intervalMinutes = 37;
     await scheduleNextSync(storageMock.state);
     expect(browserMock.alarms.clear).toHaveBeenCalledWith("lectio-sync-periodic");
-    expect(browserMock.alarms.create).toHaveBeenCalledWith("lectio-sync-periodic", { periodInMinutes: 5 });
+    expect(browserMock.alarms.create).toHaveBeenCalledWith("lectio-sync-periodic", { periodInMinutes: 37 });
   });
 
   it("requires both connections before fetching", async () => {

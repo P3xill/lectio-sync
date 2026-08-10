@@ -1,5 +1,6 @@
 import type browser from "webextension-polyfill";
 import { formatDisplayDateTime, formatDisplayTime } from "../core/date";
+import { MAX_CHECK_INTERVAL_MINUTES, MIN_CHECK_INTERVAL_MINUTES } from "../core/settings";
 import { DEFAULT_STATE, type ExtensionState, type RuntimeMessage, type RuntimeResponse } from "../core/types";
 import "./styles.css";
 
@@ -236,7 +237,9 @@ function recoveryView(expired: boolean): HTMLElement {
   const title = expired ? "Lectio login expired" : "Sync paused safely";
   const text = expired
     ? "Open Lectio and sign in again with MitID. We never see your MitID details."
-    : "Your calendar was not changed.";
+    : state.lastError?.calendarMayHaveChanged
+      ? "A calendar update was interrupted. The next sync will safely reconcile any partial changes."
+      : "Your calendar was not changed.";
   const detail = expired ? undefined : state.lastError?.message ?? "Lectio returned an unexpected page.";
   const primary = expired ? "Open Lectio" : "Try again";
   return node("div", { className: "popup-shell" }, header(), node("main", { className: "content recovery-content" },
@@ -263,7 +266,14 @@ function recoveryView(expired: boolean): HTMLElement {
 
 function settingsView(): HTMLElement {
   const form = node("form", { className: "settings-form" });
-  const interval = selectField("Check interval", "interval", ["5 minutes", "10 minutes"], state.settings.intervalMinutes === 5 ? "5 minutes" : "10 minutes");
+  const interval = numberField(
+    "Check interval (minutes)",
+    "interval",
+    state.settings.intervalMinutes,
+    MIN_CHECK_INTERVAL_MINUTES,
+    MAX_CHECK_INTERVAL_MINUTES,
+    "Choose any whole number from 5 minutes to 24 hours."
+  );
   const cancellations = selectField("Cancelled modules", "cancellations", ["Mark as cancelled", "Remove after confirmation"], state.settings.cancellationMode === "mark" ? "Mark as cancelled" : "Remove after confirmation");
   const title = toggleField("Include title", "Lesson titles are used as event names; otherwise the class is used.", state.settings.includeTitle);
   const description = toggleField("Include description", "Lesson descriptions are copied to event notes.", state.settings.includeDescription);
@@ -271,11 +281,15 @@ function settingsView(): HTMLElement {
   const teacher = toggleField("Include teacher", "Teacher names are copied to event notes.", state.settings.includeTeacher);
   const homework = toggleField("Include homework", "Off by default for data minimization.", state.settings.includeHomework);
   form.append(interval.wrapper, cancellations.wrapper, title.wrapper, description.wrapper, className.wrapper, teacher.wrapper, homework.wrapper);
-  const save = actionButton("Save settings", "primary full", async () => {
-    state = await send<ExtensionState>({
+  const save = node("button", { className: "button primary full", attrs: { type: "button" } }, node("span", { text: "Save settings" }));
+  save.disabled = busy;
+  save.addEventListener("click", () => {
+    if (!form.reportValidity()) return;
+    void perform(async () => {
+      state = await send<ExtensionState>({
         type: "UPDATE_SETTINGS",
         settings: {
-          intervalMinutes: interval.select.value.startsWith("5") ? 5 : 10,
+          intervalMinutes: Number(interval.input.value),
           cancellationMode: cancellations.select.value.startsWith("Mark") ? "mark" : "remove",
           includeTitle: title.input.checked,
           includeDescription: description.input.checked,
@@ -284,7 +298,8 @@ function settingsView(): HTMLElement {
           includeHomework: homework.input.checked
         }
       });
-    view = "main";
+      view = "main";
+    });
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -306,6 +321,28 @@ function selectField(label: string, name: string, options: string[], selected: s
   return { select, wrapper: node("label", { className: "field", attrs: { for: name } }, node("span", { text: label }), select) };
 }
 
+function numberField(label: string, name: string, value: number, min: number, max: number, detail: string) {
+  const input = node("input", { attrs: {
+    type: "number",
+    inputmode: "numeric",
+    name,
+    id: name,
+    min: String(min),
+    max: String(max),
+    step: "1",
+    required: "",
+    value: String(value)
+  } });
+  return {
+    input,
+    wrapper: node("label", { className: "field", attrs: { for: name } },
+      node("span", { text: label }),
+      input,
+      node("small", { text: detail })
+    )
+  };
+}
+
 function toggleField(label: string, detail: string, checked: boolean) {
   const input = node("input", { attrs: { type: "checkbox", ...(checked ? { checked: "" } : {}) } });
   const copy = node("span", { className: "toggle-copy" }, node("strong", { text: label }), node("small", { text: detail }));
@@ -314,9 +351,12 @@ function toggleField(label: string, detail: string, checked: boolean) {
 
 function detailsView(): HTMLElement {
   const error = state.lastError;
+  const mayHaveChanged = Boolean(error?.calendarMayHaveChanged);
   return node("div", { className: "popup-shell" }, header("Error details", true), node("main", { className: "content settings-content" },
-    node("h1", { text: "Nothing was changed" }),
-    node("p", { className: "lead", text: "Lectio Sync stopped before writing to your calendar." }),
+    node("h1", { text: mayHaveChanged ? "Update interrupted" : "Nothing was changed" }),
+    node("p", { className: "lead", text: mayHaveChanged
+      ? "Some changes may have been applied. Try again to reconcile the dedicated Lectio calendar."
+      : "Lectio Sync stopped before writing to your calendar." }),
     node("dl", { className: "detail-list" },
       node("dt", { text: "Error" }), node("dd", { text: error?.code ?? "UNKNOWN" }),
       node("dt", { text: "When" }), node("dd", { text: error ? formatDisplayDateTime(new Date(error.occurredAt)) : "Unknown" }),

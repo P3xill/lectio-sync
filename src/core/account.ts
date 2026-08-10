@@ -7,7 +7,7 @@ export interface DiscoveredLectioAccount {
 export function schoolIdFromUrl(rawUrl: string): string | undefined {
   try {
     const url = new URL(rawUrl);
-    if (url.hostname !== "www.lectio.dk") return undefined;
+    if (url.protocol !== "https:" || url.hostname !== "www.lectio.dk") return undefined;
     return url.pathname.match(/^\/lectio\/(\d+)(?:\/|$)/)?.[1];
   } catch {
     return undefined;
@@ -15,12 +15,21 @@ export function schoolIdFromUrl(rawUrl: string): string | undefined {
 }
 
 export function studentIdFromDocument(document: Document): string | undefined {
+  const schoolId = schoolIdFromUrl(document.baseURI);
+  if (!schoolId) return undefined;
+  const schoolPath = `/lectio/${schoolId}/`;
   const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="elevid="]'));
   for (const anchor of candidates) {
     try {
       const url = new URL(anchor.href, document.baseURI);
       const studentId = url.searchParams.get("elevid");
-      if (studentId && /^\d+$/.test(studentId)) return studentId;
+      if (
+        url.protocol === "https:"
+        && url.hostname === "www.lectio.dk"
+        && url.pathname.startsWith(schoolPath)
+        && studentId
+        && /^\d{1,32}$/.test(studentId)
+      ) return studentId;
     } catch {
       // Ignore malformed links from page content.
     }

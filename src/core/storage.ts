@@ -1,4 +1,5 @@
 import browser from "webextension-polyfill";
+import { sanitizeIntervalMinutes } from "./settings";
 import { DEFAULT_STATE, type ExtensionState } from "./types";
 
 const STATE_KEY = "lectioSyncStateV1";
@@ -6,10 +7,12 @@ const STATE_KEY = "lectioSyncStateV1";
 export async function getState(): Promise<ExtensionState> {
   const stored = await browser.storage.local.get(STATE_KEY);
   const value = stored[STATE_KEY] as Partial<ExtensionState> | undefined;
+  const settings = { ...DEFAULT_STATE.settings, ...value?.settings };
+  settings.intervalMinutes = sanitizeIntervalMinutes(settings.intervalMinutes, DEFAULT_STATE.settings.intervalMinutes);
   return {
     ...DEFAULT_STATE,
     ...value,
-    settings: { ...DEFAULT_STATE.settings, ...value?.settings },
+    settings,
     sourceSnapshots: value?.sourceSnapshots ?? {},
     rotationCursor: value?.rotationCursor ?? 0
   };

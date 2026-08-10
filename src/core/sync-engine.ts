@@ -16,6 +16,8 @@ import type {
 } from "./types";
 
 const ALARM_NAME = "lectio-sync-periodic";
+const MAX_LECTIO_RESPONSE_BYTES = 2_000_000;
+const MAX_EVENTS_PER_SYNC = 500;
 
 function calendarAdapter() {
   return __TARGET_BROWSER__ === "safari" ? new SafariCalendarAdapter() : new GoogleCalendarAdapter();
@@ -61,6 +63,41 @@ function weekWindow(baseMonday: Date, offsets: number[]) {
   };
 }
 
+async function readLimitedText(response: Response): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_LECTIO_RESPONSE_BYTES) {
+    throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned a page that was too large.");
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_LECTIO_RESPONSE_BYTES) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned a page that was too large.");
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_LECTIO_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned a page that was too large.");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: Date): Promise<LectioEvent[]> {
   const params = new URLSearchParams({
     type: "elev",
@@ -89,7 +126,7 @@ async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: 
     throw makeSafeError("LECTIO_NETWORK", `Lectio returned HTTP ${response.status}.`);
   }
 
-  const html = await response.text();
+  const html = await readLimitedText(response);
   try {
     return parseLectioSchedule(html, response.url).events;
   } catch (error) {
@@ -148,7 +185,7 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
     throw makeSafeError("LECTIO_NETWORK", `Lectio returned HTTP ${response.status} for an activity page.`);
   }
 
-  const html = await response.text();
+  const html = await readLimitedText(response);
   try {
     const details = parseLectioActivityDetails(html, response.url || url);
     return {
@@ -160,7 +197,7 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
     if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
       throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
     }
-    return event;
+    throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned an unexpected activity page.", String(error));
   }
 }
 
@@ -273,6 +310,9 @@ export async function runSync(): Promise<SyncSummary> {
     }
 
     const uniqueDesiredSource = [...new Map(desiredSource.map((event) => [event.sourceId, event])).values()];
+    if (uniqueDesiredSource.length > MAX_EVENTS_PER_SYNC) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned too many events in one synchronization.");
+    }
     const enrichedSource = await enrichActivityDetails(uniqueDesiredSource, state.lectioAccount.schoolId);
     const calendarSource: CalendarEventInput[] = [];
     for (const event of enrichedSource) {
@@ -293,7 +333,21 @@ export async function runSync(): Promise<SyncSummary> {
     const uniqueExisting = [...new Map(existing.map((event) => [event.id, event])).values()];
     const nowIso = new Date().toISOString();
     const reconciliation = reconcileEvents(desired, uniqueExisting, state.sourceSnapshots, nowIso);
-    const summary = await adapter.apply(state.googleCalendarId, reconciliation.operations);
+    if (reconciliation.operations.length > MAX_EVENTS_PER_SYNC) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Too many calendar changes were required in one synchronization.");
+    }
+    let summary: SyncSummary;
+    try {
+      summary = await adapter.apply(state.googleCalendarId, reconciliation.operations);
+    } catch (error) {
+      if (__TARGET_BROWSER__ === "safari") throw error;
+      const interrupted = errorFromUnknown(error);
+      throw {
+        ...interrupted,
+        message: "Calendar synchronization was interrupted. Some changes may have been applied; the next sync will reconcile them.",
+        calendarMayHaveChanged: true
+      } satisfies SafeError;
+    }
 
     const covered = new Set([
       ...calendarSource.map((event) => event.sourceId),

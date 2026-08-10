@@ -45,14 +45,38 @@ describe("parseLectioSchedule", () => {
       .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
-  it("skips malformed bricks without a stable source id or time", () => {
-    const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Bad</a></td></tr></table>';
-    expect(parseLectioSchedule(html).events).toEqual([]);
+  it("requires both a Lectio schedule table and dated cells", () => {
+    expect(() => parseLectioSchedule('<div data-date="2026-08-10"></div>'))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+    expect(() => parseLectioSchedule('<table class="s2skema"></table>'))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
-  it("rejects activity links outside the exact Lectio host", () => {
+  it("fails closed on malformed bricks without a stable source id or time", () => {
+    const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Bad</a></td></tr></table>';
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("fails closed on activity links outside the exact Lectio host", () => {
     const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik" href="https://evil.example/activity?absid=10" data-tooltip="10/8-2026 08:00 til 09:00"><span class="s2skemabrikcontent">Math</span></a></td></tr></table>';
-    expect(parseLectioSchedule(html).events).toEqual([]);
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("rejects schedules above the per-sync event limit", () => {
+    const bricks = Array.from({ length: 501 }, (_, index) =>
+      `<a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=${index + 1}" data-tooltip="10/8-2026 08:00 til 09:00">Math</a>`
+    ).join("");
+    const html = `<table class="s2skema"><tr><td data-date="2026-08-10">${bricks}</td></tr></table>`;
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("rejects an excessively node-heavy document before recursive parsing", () => {
+    const html = `<html><body>${"<i></i>".repeat(50_001)}<table class="s2skema"><tr><td data-date="2026-08-10"></td></tr></table></body></html>`;
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
   it("extracts a current Lectio tooltip title and multiline note", () => {

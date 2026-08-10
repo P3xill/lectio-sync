@@ -8,7 +8,7 @@ There is no Lectio password form, no MitID automation, and no hosted backend. Th
 
 - Detects the student's school and student ID after a normal Lectio login.
 - Reads linked normal-lesson activity pages to include their activity title and note while excluding attached-document contents.
-- Checks current and upcoming timetable weeks every 5 or 10 minutes while the browser can run extension alarms.
+- Checks current and upcoming timetable weeks at a user-selected interval from 5 minutes to 24 hours while the browser can run extension alarms.
 - Inserts, updates, cancels, and safely removes events in one dedicated calendar.
 - Marks cancelled modules `AFLYST · …`, makes them free, and colors them red in Google Calendar.
 - Shows a desktop notification as soon as an automatic check detects that a previously synced module was cancelled; clicking it opens Google Calendar.

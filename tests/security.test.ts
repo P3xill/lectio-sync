@@ -2,9 +2,14 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+const SKIPPED_SOURCE_DIRECTORIES = new Set([".build", ".git", "artifacts", "dist", "node_modules"]);
+
 async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(entries.map((entry) => {
+    if (entry.isDirectory() && SKIPPED_SOURCE_DIRECTORIES.has(entry.name)) {
+      return [];
+    }
     const path = join(directory, entry.name);
     return entry.isDirectory() ? sourceFiles(path) : [path];
   }));
@@ -48,8 +53,22 @@ describe("extension security posture", () => {
     expect(handler).not.toMatch(/eventStore\.calendars\(for: \.event\)\.first/);
   });
 
+  it("discards staged Safari EventKit changes when a batch fails", async () => {
+    const handler = await readFile("safari-native/SafariWebExtensionHandler.swift", "utf8");
+    expect(handler).toContain("private let maximumOperations = 500");
+    expect(handler).toMatch(/catch \{\s*eventStore\.reset\(\)\s*throw error\s*\}/);
+  });
+
   it("does not generate source maps for Safari conversion", async () => {
     const buildScript = await readFile("scripts/build-extension.mjs", "utf8");
     expect(buildScript).toContain('sourcemap: target !== "safari"');
+  });
+
+  it("validates account-discovery messages against their Lectio sender", async () => {
+    const background = await readFile("src/background.ts", "utf8");
+    expect(background).toContain("parseRuntimeMessage(value)");
+    expect(background).toContain("lectioSenderUrl(sender)");
+    expect(background).toContain("schoolId !== schoolIdFromUrl(message.url)");
+    expect(background).not.toContain("handleMessage(message as RuntimeMessage)");
   });
 });

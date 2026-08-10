@@ -42,11 +42,16 @@ describe("state storage", () => {
     expect(state.rotationCursor).toBe(3);
   });
 
+  it("repairs an out-of-range stored check interval", async () => {
+    local.values.lectioSyncStateV1 = { settings: { intervalMinutes: 1 } };
+    expect((await getState()).settings.intervalMinutes).toBe(10);
+  });
+
   it("patches nested settings without dropping other fields", async () => {
     await setState({ ...DEFAULT_STATE, status: "ready" });
-    const next = await patchState({ settings: { ...DEFAULT_STATE.settings, intervalMinutes: 5 } });
+    const next = await patchState({ settings: { ...DEFAULT_STATE.settings, intervalMinutes: 37 } });
     expect(next.status).toBe("ready");
-    expect(next.settings.intervalMinutes).toBe(5);
+    expect(next.settings.intervalMinutes).toBe(37);
     expect(local.set).toHaveBeenCalled();
   });
 

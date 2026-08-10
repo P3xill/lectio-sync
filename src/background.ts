@@ -1,11 +1,58 @@
 import browser from "webextension-polyfill";
 import { schoolIdFromUrl } from "./core/account";
+import { sanitizeIntervalMinutes } from "./core/settings";
 import { clearState, getState, patchState } from "./core/storage";
 import { ALARM_NAME, connectCalendar, runSync, scheduleNextSync } from "./core/sync-engine";
 import { disconnectFirefoxGoogle } from "./core/firefox-oauth";
 import type { RuntimeMessage, RuntimeResponse, SyncSettings } from "./core/types";
 
-async function handleMessage(message: RuntimeMessage): Promise<RuntimeResponse> {
+interface RuntimeSender {
+  url?: string;
+  tab?: { url?: string };
+}
+
+function parseRuntimeMessage(value: unknown): RuntimeMessage | undefined {
+  if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
+  const message = value as Record<string, unknown>;
+  switch (message.type) {
+    case "GET_STATE":
+    case "START_LECTIO_SETUP":
+    case "CONNECT_GOOGLE":
+    case "SYNC_NOW":
+    case "CHECK_LECTIO":
+    case "OPEN_SETTINGS":
+      return { type: message.type };
+    case "LECTIO_PAGE_SEEN":
+      if (
+        typeof message.url !== "string"
+        || message.url.length > 2_048
+        || (message.studentId !== undefined && (typeof message.studentId !== "string" || !/^\d{1,32}$/.test(message.studentId)))
+        || (message.schoolName !== undefined && (typeof message.schoolName !== "string" || message.schoolName.length > 120))
+      ) return undefined;
+      return {
+        type: message.type,
+        url: message.url,
+        studentId: message.studentId as string | undefined,
+        schoolName: message.schoolName as string | undefined
+      };
+    case "UPDATE_SETTINGS":
+      if (typeof message.settings !== "object" || message.settings === null) return undefined;
+      return { type: message.type, settings: message.settings as Partial<SyncSettings> };
+    case "DISCONNECT":
+      if (message.target !== "lectio" && message.target !== "google" && message.target !== "all") return undefined;
+      return { type: message.type, target: message.target };
+    default:
+      return undefined;
+  }
+}
+
+function lectioSenderUrl(sender: RuntimeSender): string | undefined {
+  const rawUrl = sender.url ?? sender.tab?.url;
+  if (!rawUrl || !schoolIdFromUrl(rawUrl)) return undefined;
+  return rawUrl;
+}
+
+async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}): Promise<RuntimeResponse> {
   try {
     switch (message.type) {
       case "GET_STATE":
@@ -14,7 +61,11 @@ async function handleMessage(message: RuntimeMessage): Promise<RuntimeResponse> 
         await openLectioTab();
         return { ok: true };
       case "LECTIO_PAGE_SEEN": {
-        const schoolId = schoolIdFromUrl(message.url);
+        const senderUrl = lectioSenderUrl(sender);
+        const schoolId = senderUrl ? schoolIdFromUrl(senderUrl) : undefined;
+        if (!senderUrl || schoolId !== schoolIdFromUrl(message.url)) {
+          throw new Error("Lectio account discovery came from an untrusted page.");
+        }
         if (!schoolId || !message.studentId) return { ok: true };
         const state = await getState();
         const next = await patchState({
@@ -114,7 +165,7 @@ function lectioTabScore(rawUrl: string | undefined, schoolPrefix: string | undef
 
 function sanitizeSettings(input: Partial<SyncSettings>, current: SyncSettings): SyncSettings {
   return {
-    intervalMinutes: input.intervalMinutes === 5 ? 5 : input.intervalMinutes === 10 ? 10 : current.intervalMinutes,
+    intervalMinutes: sanitizeIntervalMinutes(input.intervalMinutes, current.intervalMinutes),
     horizonWeeks: Number.isInteger(input.horizonWeeks) && Number(input.horizonWeeks) >= 2 && Number(input.horizonWeeks) <= 12
       ? Number(input.horizonWeeks)
       : current.horizonWeeks,
@@ -137,7 +188,16 @@ async function connectCalendarAdapterDisconnect(): Promise<void> {
   }
 }
 
-browser.runtime.onMessage.addListener((message: unknown) => handleMessage(message as RuntimeMessage));
+browser.runtime.onMessage.addListener((value: unknown, sender: RuntimeSender) => {
+  const message = parseRuntimeMessage(value);
+  if (!message) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: "UNKNOWN", message: "The extension rejected an invalid request.", occurredAt: new Date().toISOString() }
+    } satisfies RuntimeResponse);
+  }
+  return handleMessage(message, sender);
+});
 
 browser.runtime.onInstalled.addListener(() => {
   void scheduleNextSync();

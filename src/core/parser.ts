@@ -3,6 +3,9 @@ import type { LectioEvent } from "./types";
 
 type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
+const MAX_SCHEDULE_EVENTS = 500;
+const MAX_DOCUMENT_NODES = 50_000;
+const MAX_DOCUMENT_DEPTH = 200;
 
 export class LectioParserError extends Error {
   constructor(
@@ -31,6 +34,21 @@ function isElement(node: Node): node is Element {
 
 function children(node: Node): Node[] {
   return "childNodes" in node ? (node.childNodes as Node[]) : [];
+}
+
+function validateDocumentComplexity(document: Node): void {
+  const pending: Array<{ node: Node; depth: number }> = [{ node: document, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    visited += 1;
+    if (visited > MAX_DOCUMENT_NODES || current.depth > MAX_DOCUMENT_DEPTH) {
+      throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned a page that was too complex.");
+    }
+    for (const child of children(current.node)) {
+      pending.push({ node: child, depth: current.depth + 1 });
+    }
+  }
 }
 
 function getAttr(node: Element, name: string): string | undefined {
@@ -188,9 +206,9 @@ function parseSourceId(href: string | undefined): string | undefined {
     if (url.protocol !== "https:" || url.hostname !== "www.lectio.dk") return undefined;
     for (const key of ["absid", "aftaleid", "ProeveholdId", "proeveholdid", "aktivitetid"]) {
       const value = url.searchParams.get(key);
-      if (value) return `${key.toLowerCase()}:${value}`;
+      if (value && /^\d{1,32}$/.test(value)) return `${key.toLowerCase()}:${value}`;
     }
-    return url.pathname && url.search ? `${url.pathname}${url.search}` : undefined;
+    return undefined;
   } catch {
     return undefined;
   }
@@ -219,23 +237,24 @@ function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; 
 
 function eventTitle(node: Element, lines: string[]): string {
   const explicitTitle = valueAfterLabel(lines, /^(?:Aktivitets)?Titel\s*:/i);
-  if (explicitTitle) return explicitTitle;
+  if (explicitTitle) return boundedText(explicitTitle, 300) ?? "Lectio module";
   const tooltipTitle = titleBeforeDate(lines);
   if (tooltipTitle) return tooltipTitle;
   const content = findFirst(node, (element) => hasClass(element, "s2skemabrikcontent"));
   const fromContent = content ? cleanText(textContent(content)) : "";
-  if (fromContent) return fromContent.split("\n").at(-1)?.trim() || "Lectio module";
+  if (fromContent) return boundedText(fromContent.split("\n").at(-1), 300) ?? "Lectio module";
 
   const hold = valueAfterLabel(lines, /^Hold\s*:/i);
-  if (hold) return hold;
+  if (hold) return boundedText(hold, 300) ?? "Lectio module";
 
   const titleLine = lines.find((line) =>
     !/^(Aflyst!|Ændret!|\d{1,2}\/\d{1,2}-\d{4}|Hold\s*:|Lærer.*:|Lokale.*:|Lektier\s*:)/i.test(line)
   );
-  return titleLine || "Lectio module";
+  return boundedText(titleLine, 300) ?? "Lectio module";
 }
 
 function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefined {
+  if (!ancestors.some((ancestor) => ancestor.tagName === "table" && hasClass(ancestor, "s2skema"))) return undefined;
   const tooltip = cleanText(getAttr(node, "data-tooltip") ?? getAttr(node, "data-additionalinfo") ?? "");
   const lines = tooltip.split("\n").map((line) => line.trim()).filter(Boolean);
   const dayCell = [...ancestors].reverse().find((ancestor) => ancestor.tagName === "td" && getAttr(ancestor, "data-date"));
@@ -266,9 +285,9 @@ function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefine
     note,
     start: dateTime.start,
     end: dateTime.end,
-    className: valueAfterLabel(lines, /^Hold\s*:/i),
-    location: valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i),
-    teacher: valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i),
+    className: boundedText(valueAfterLabel(lines, /^Hold\s*:/i), 300),
+    location: boundedText(valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i), 300),
+    teacher: boundedText(valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i), 300),
     homework,
     status,
     sourceUrl: href ? new URL(href, "https://www.lectio.dk").toString() : undefined
@@ -287,6 +306,7 @@ export function parseLectioActivityDetails(
   }
 
   const document = parse(html) as Node;
+  validateDocumentComplexity(document);
   const composite = compositeActivityFields(document);
   const title = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*(?:s)?titel|activity[-_ ]*title/i)
     ?? valueBesideLabel(document, /^(?:Aktivitets)?titel\s*:?$/i)
@@ -318,22 +338,43 @@ export function parseLectioSchedule(html: string, finalUrl = "https://www.lectio
   }
 
   const document = parse(html) as Node;
+  validateDocumentComplexity(document);
   const events: LectioEvent[] = [];
   let structuralMarkers = 0;
+  let scheduleTables = 0;
+  let datedCells = 0;
+  let eventCandidates = 0;
+  let malformedCandidates = 0;
 
   walk(document, (node, ancestors) => {
     if (!isElement(node)) return;
-    if ((node.tagName === "table" && hasClass(node, "s2skema")) || getAttr(node, "data-date")) {
+    if (node.tagName === "table" && hasClass(node, "s2skema")) {
+      scheduleTables += 1;
+      structuralMarkers += 1;
+    }
+    if (node.tagName === "td" && getAttr(node, "data-date")) {
+      datedCells += 1;
       structuralMarkers += 1;
     }
     if (node.tagName === "a" && (hasClass(node, "s2skemabrik") || hasClass(node, "s2bgbox"))) {
+      eventCandidates += 1;
       const event = parseBrick(node, ancestors);
-      if (event) events.push(event);
+      if (event) {
+        events.push(event);
+        if (events.length > MAX_SCHEDULE_EVENTS) {
+          throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned too many schedule events.");
+        }
+      } else {
+        malformedCandidates += 1;
+      }
     }
   });
 
-  if (structuralMarkers === 0) {
+  if (scheduleTables === 0 || datedCells === 0) {
     throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned a page without schedule markers.");
+  }
+  if (eventCandidates > 0 && malformedCandidates > 0) {
+    throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned malformed schedule events.");
   }
 
   const deduplicated = new Map(events.map((event) => [event.sourceId, event]));
