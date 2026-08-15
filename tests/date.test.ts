@@ -15,8 +15,22 @@ describe("ISO week handling", () => {
     expect(lectioWeekValue(new Date("2027-01-01T12:00:00Z"))).toBe("532026");
   });
 
-  it("fetches the entire horizon initially", () => {
-    expect(getFetchWeekOffsets(true, 8, 0)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  it("uses Copenhagen's calendar date around local Monday midnight", () => {
+    expect(getIsoWeek(new Date("2026-08-16T22:30:00Z"))).toMatchObject({
+      week: 34,
+      year: 2026,
+      monday: new Date("2026-08-17T00:00:00Z")
+    });
+    expect(getIsoWeek(new Date("2026-01-04T23:30:00Z"))).toMatchObject({
+      week: 2,
+      year: 2026,
+      monday: new Date("2026-01-05T00:00:00Z")
+    });
+  });
+
+  it("prioritizes the near three weeks initially", () => {
+    expect(getFetchWeekOffsets(true, 8, 0)).toEqual([0, 1, 2]);
+    expect(getFetchWeekOffsets(true, 1, 0)).toEqual([0, 1]);
   });
 
   it("fetches near weeks and rotates one distant week later", () => {

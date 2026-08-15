@@ -26,6 +26,20 @@ describe("reconcileEvents", () => {
     expect(result.operations).toEqual([{ kind: "update", event: desired("a", "new"), eventId: "id-a" }]);
   });
 
+  it("keeps the canonical event and removes duplicate provider events for one source", () => {
+    const result = reconcileEvents([desired("a", "same")], [
+      { id: "legacy-a", sourceId: "a", fingerprint: "old" },
+      { id: "id-a", sourceId: "a", fingerprint: "same" },
+      { id: "duplicate-a", sourceId: "a", fingerprint: "same" }
+    ], {}, "2026-08-01T00:00:00Z");
+
+    expect(result.operations).toEqual([
+      { kind: "noop", eventId: "id-a", sourceId: "a" },
+      { kind: "delete", eventId: "legacy-a", sourceId: "a" },
+      { kind: "delete", eventId: "duplicate-a", sourceId: "a" }
+    ]);
+  });
+
   it("never deletes after only one valid missing observation", () => {
     const result = reconcileEvents([], [{ id: "id-a", sourceId: "a", fingerprint: "old" }], {}, "2026-08-01T00:00:00Z");
     expect(result.operations).toEqual([{ kind: "noop", eventId: "id-a", sourceId: "a" }]);

@@ -2,6 +2,29 @@
 
 Automated tests use synthetic Lectio pages and mocked calendar providers. Complete these cases with dedicated non-production test accounts before a store release.
 
+## Recording results
+
+Record each completed case in `MANUAL_TEST_RESULTS.md` using `PASS`, `FAIL`, or `NOT RUN`. For failures, include the browser/version, short reproduction, expected versus actual behavior, and any safe diagnostic reference (never account data, tokens, or screenshots containing student data).
+
+Copy this block for each browser while testing:
+
+```text
+### <Browser> — <version> — <date>
+
+- [ ] 1 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 2 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 3 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 4 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 5 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 6 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 7 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 8 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 9 — <short result> — PASS | FAIL | NOT RUN
+- [ ] 10 — <short result> — PASS | FAIL | NOT RUN
+```
+
+Use only the applicable numbered rows; Brave reuses Chrome cases, Firefox has six cases, and Safari has five. Preserve earlier smoke-test evidence in the results file—add a new dated section rather than replacing it.
+
 ## Chrome
 
 1. Install the unpacked release build and confirm the permission list contains only Lectio, Google APIs, identity, alarms, notifications, and storage.

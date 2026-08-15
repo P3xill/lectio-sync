@@ -160,16 +160,51 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             UserDefaults.standard.removeObject(forKey: ownedCalendarIdentifierKey)
         }
 
-        guard let source = eventStore.sources.first(where: isGoogleSource) else {
+        let sourceIdentifiers = preferredGoogleSourceIdentifiers()
+        guard !sourceIdentifiers.isEmpty else {
             throw BridgeError("No Google Calendar account was found. Add Google in System Settings › Internet Accounts, then try again.")
         }
 
-        let calendar = EKCalendar(for: .event, eventStore: eventStore)
-        calendar.title = calendarName
-        calendar.source = source
-        try eventStore.saveCalendar(calendar, commit: true)
-        UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
-        return calendar
+        // EventKit doesn't guarantee source order, and a Google account can expose
+        // read-only/delegated CalDAV sources alongside the writable primary source.
+        for sourceIdentifier in sourceIdentifiers {
+            guard let source = eventStore.source(withIdentifier: sourceIdentifier) else { continue }
+
+            if let existing = source.calendars(for: .event).first(where: {
+                $0.title == calendarName && $0.allowsContentModifications && !$0.isSubscribed
+            }) {
+                UserDefaults.standard.set(existing.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+                return existing
+            }
+
+            let calendar = EKCalendar(for: .event, eventStore: eventStore)
+            calendar.title = calendarName
+            calendar.source = source
+            do {
+                try eventStore.saveCalendar(calendar, commit: true)
+                UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+                return calendar
+            } catch {
+                // Revert this failed candidate before trying the next Google source.
+                eventStore.reset()
+            }
+        }
+
+        throw BridgeError("Apple Calendar found your Google account, but none of its sources allow a Lectio calendar to be created. In Apple Calendar, create a calendar named ‘Lectio’ under Google, then try again.")
+    }
+
+    private func preferredGoogleSourceIdentifiers() -> [String] {
+        var identifiers: [String] = []
+        if let defaultSource = eventStore.defaultCalendarForNewEvents?.source,
+           isGoogleSource(defaultSource) {
+            identifiers.append(defaultSource.sourceIdentifier)
+        }
+        for source in eventStore.sources where isGoogleSource(source) {
+            if !identifiers.contains(source.sourceIdentifier) {
+                identifiers.append(source.sourceIdentifier)
+            }
+        }
+        return identifiers
     }
 
     private func ownedCalendar(withIdentifier identifier: String) -> EKCalendar? {
@@ -217,14 +252,18 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 case "update":
                     guard let input = operation["event"] as? [String: Any],
                           let eventId = operation["eventId"] as? String,
+                          let sourceId = input["sourceId"] as? String,
                           eventId.count <= 512 else {
                         throw BridgeError("An updated calendar event was invalid.")
                     }
                     let existing = eventStore.event(withIdentifier: eventId)
                     let event: EKEvent
-                    if let existing,
-                       existing.calendar.calendarIdentifier == calendar.calendarIdentifier,
-                       readMarker(from: existing.url) != nil {
+                    if let existing {
+                        guard existing.calendar.calendarIdentifier == calendar.calendarIdentifier,
+                              let marker = readMarker(from: existing.url),
+                              marker.sourceId == sourceId else {
+                            throw BridgeError("Lectio Sync refused to update an event it does not own.")
+                        }
                         event = existing
                         updated += 1
                     } else {
@@ -236,6 +275,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
                 case "delete":
                     guard let eventId = operation["eventId"] as? String,
+                          let sourceId = operation["sourceId"] as? String,
                           eventId.count <= 512 else {
                         throw BridgeError("A removed calendar event was invalid.")
                     }
@@ -244,7 +284,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                         continue
                     }
                     guard event.calendar.calendarIdentifier == calendar.calendarIdentifier,
-                          readMarker(from: event.url) != nil else {
+                          let marker = readMarker(from: event.url),
+                          marker.sourceId == sourceId else {
                         throw BridgeError("Lectio Sync refused to remove an event it does not own.")
                     }
                     try eventStore.remove(event, span: .thisEvent, commit: false)

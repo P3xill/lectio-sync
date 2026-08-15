@@ -38,18 +38,26 @@ const usageDescriptions = [
   ["NSCalendarsUsageDescription", "Lectio Sync needs calendar access to add and update your timetable."],
   ["NSCalendarsFullAccessUsageDescription", "Lectio Sync needs full calendar access to keep its dedicated Lectio calendar up to date."]
 ];
+function addPlistString(plist, key, value) {
+  const update = spawnSync("/usr/libexec/PlistBuddy", [
+    "-c", `Add :${key} string ${value}`,
+    plist
+  ], { stdio: "inherit" });
+  if (update.status !== 0) process.exit(update.status ?? 1);
+}
+
 for (const platform of ["iOS", "macOS"]) {
   for (const target of ["App", "Extension"]) {
     const plist = resolve(projectRoot, `${platform} (${target})/Info.plist`);
     for (const [key, description] of usageDescriptions) {
-      const update = spawnSync("/usr/libexec/PlistBuddy", [
-        "-c", `Add :${key} string ${description}`,
-        plist
-      ], { stdio: "inherit" });
-      if (update.status !== 0) process.exit(update.status ?? 1);
+      addPlistString(plist, key, description);
     }
   }
 }
+
+const macAppPlist = resolve(projectRoot, "macOS (App)/Info.plist");
+addPlistString(macAppPlist, "LSApplicationCategoryType", "public.app-category.productivity");
+addPlistString(macAppPlist, "NSHumanReadableCopyright", "Copyright © 2026 Johannes Nørgaard Peulicke");
 
 const projectFile = resolve(projectRoot, "Lectio Sync.xcodeproj/project.pbxproj");
 let project = await readFile(projectFile, "utf8");

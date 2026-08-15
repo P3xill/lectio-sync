@@ -27,6 +27,7 @@ describe("extension security posture", () => {
     expect(manifest.content_security_policy.extension_pages).toContain("object-src 'none'");
     expect(manifest.content_security_policy.extension_pages).not.toContain("unsafe-eval");
     expect(manifest.content_security_policy.extension_pages).not.toContain("unsafe-inline");
+    expect(manifest.permissions).not.toContain("unlimitedStorage");
   });
 
   it("contains no committed private keys or OAuth client secrets", async () => {
@@ -50,6 +51,9 @@ describe("extension security posture", () => {
     expect(handler).toContain("LectioSyncOwnedCalendarIdentifierV1");
     expect(handler).toContain("ownedCalendar(withIdentifier: calendarId)");
     expect(handler).toContain("UserDefaults.standard.set(calendar.calendarIdentifier");
+    expect(handler).toContain("preferredGoogleSourceIdentifiers()");
+    expect(handler).toContain("defaultCalendarForNewEvents?.source");
+    expect(handler).toContain("$0.allowsContentModifications && !$0.isSubscribed");
     expect(handler).not.toMatch(/eventStore\.calendars\(for: \.event\)\.first/);
   });
 
@@ -57,6 +61,19 @@ describe("extension security posture", () => {
     const handler = await readFile("safari-native/SafariWebExtensionHandler.swift", "utf8");
     expect(handler).toContain("private let maximumOperations = 500");
     expect(handler).toMatch(/catch \{\s*eventStore\.reset\(\)\s*throw error\s*\}/);
+  });
+
+  it("requires the Safari marker source to match every update and delete", async () => {
+    const handler = await readFile("safari-native/SafariWebExtensionHandler.swift", "utf8");
+    expect(handler.match(/marker\.sourceId == sourceId/g)).toHaveLength(2);
+    expect(handler).toContain("refused to update an event it does not own");
+    expect(handler).toContain("refused to remove an event it does not own");
+  });
+
+  it("generates required Safari App Store metadata", async () => {
+    const converter = await readFile("scripts/convert-safari.mjs", "utf8");
+    expect(converter).toContain('"LSApplicationCategoryType", "public.app-category.productivity"');
+    expect(converter).toContain('"NSHumanReadableCopyright", "Copyright © 2026 Johannes Nørgaard Peulicke"');
   });
 
   it("does not generate source maps for Safari conversion", async () => {
@@ -70,5 +87,15 @@ describe("extension security posture", () => {
     expect(background).toContain("lectioSenderUrl(sender)");
     expect(background).toContain("schoolId !== schoolIdFromUrl(message.url)");
     expect(background).not.toContain("handleMessage(message as RuntimeMessage)");
+  });
+
+  it("revalidates Safari's live Lectio tab before reporting a connection", async () => {
+    const background = await readFile("src/background.ts", "utf8");
+    expect(background).toContain('case "GET_STATE":\n        return { ok: true, data: await refreshLectioConnection() };');
+    expect(background).toContain("browser.tabs.onRemoved.addListener");
+    expect(background).toContain("browser.tabs.onUpdated.addListener");
+    expect(background).toContain("await browser.alarms.clear(ALARM_NAME)");
+    expect(background).toContain("restoreSafariCalendarConnection(await getState())");
+    expect(background).toContain("return await connectCalendar(false)");
   });
 });

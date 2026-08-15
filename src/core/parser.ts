@@ -173,6 +173,21 @@ function compositeActivityFields(document: Node): { title?: string; note?: strin
   return { title, note, found: true };
 }
 
+function isRecognizedLectioActivityPage(document: Node, finalUrl: string): boolean {
+  try {
+    const url = new URL(finalUrl);
+    const trustedPath = /^\/lectio\/\d+\/aktivitet\/(?:aktivitetforside2|aktivitetinfo2)\.aspx$/i.test(url.pathname);
+    if (url.protocol !== "https:" || url.hostname !== "www.lectio.dk" || !trustedPath) return false;
+
+    return Boolean(findFirst(document, (element) =>
+      getAttr(element, "id") === "NiceFeaturesForAktivitetDialog"
+      || hasClass(element, "prepend-fonticon-activity")
+    ));
+  } catch {
+    return false;
+  }
+}
+
 function valueAfterLabel(lines: string[], pattern: RegExp): string | undefined {
   const line = lines.find((candidate) => pattern.test(candidate));
   return line?.split(":", 2)[1]?.trim() || undefined;
@@ -214,10 +229,35 @@ function parseSourceId(href: string | undefined): string | undefined {
   }
 }
 
+function isValidGregorianDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || year < 1 || year > 9_999 || month < 1 || month > 12 || day < 1) return false;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+  return day <= daysInMonth;
+}
+
+function isValidTime(hour: number, minute: number): boolean {
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23
+    && Number.isInteger(minute) && minute >= 0 && minute <= 59;
+}
+
 function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; end: string } | undefined {
   const explicit = tooltip.match(/(\d{1,2})\/(\d{1,2})-(\d{4})\s+(\d{1,2}):(\d{2})\s+til\s+(\d{1,2}):(\d{2})/i);
   if (explicit) {
     const [, day, month, year, startHour, startMinute, endHour, endMinute] = explicit;
+    const numericDay = Number(day);
+    const numericMonth = Number(month);
+    const numericYear = Number(year);
+    const numericStartHour = Number(startHour);
+    const numericStartMinute = Number(startMinute);
+    const numericEndHour = Number(endHour);
+    const numericEndMinute = Number(endMinute);
+    if (
+      !isValidGregorianDate(numericYear, numericMonth, numericDay)
+      || !isValidTime(numericStartHour, numericStartMinute)
+      || !isValidTime(numericEndHour, numericEndMinute)
+      || numericEndHour * 60 + numericEndMinute <= numericStartHour * 60 + numericStartMinute
+    ) return undefined;
     return {
       start: `${year}-${month?.padStart(2, "0")}-${day?.padStart(2, "0")}T${startHour?.padStart(2, "0")}:${startMinute}:00`,
       end: `${year}-${month?.padStart(2, "0")}-${day?.padStart(2, "0")}T${endHour?.padStart(2, "0")}:${endMinute}:00`
@@ -227,6 +267,17 @@ function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; 
   const timeOnly = tooltip.match(/(?:^|\s)(\d{1,2}):(\d{2})\s+til\s+(\d{1,2}):(\d{2})/i);
   if (timeOnly && fallbackDay && /^\d{4}-\d{2}-\d{2}$/.test(fallbackDay)) {
     const [, startHour, startMinute, endHour, endMinute] = timeOnly;
+    const [year, month, day] = fallbackDay.split("-").map(Number);
+    const numericStartHour = Number(startHour);
+    const numericStartMinute = Number(startMinute);
+    const numericEndHour = Number(endHour);
+    const numericEndMinute = Number(endMinute);
+    if (
+      !isValidGregorianDate(year!, month!, day!)
+      || !isValidTime(numericStartHour, numericStartMinute)
+      || !isValidTime(numericEndHour, numericEndMinute)
+      || numericEndHour * 60 + numericEndMinute <= numericStartHour * 60 + numericStartMinute
+    ) return undefined;
     return {
       start: `${fallbackDay}T${startHour?.padStart(2, "0")}:${startMinute}:00`,
       end: `${fallbackDay}T${endHour?.padStart(2, "0")}:${endMinute}:00`
@@ -308,6 +359,7 @@ export function parseLectioActivityDetails(
   const document = parse(html) as Node;
   validateDocumentComplexity(document);
   const composite = compositeActivityFields(document);
+  const recognizedActivityPage = isRecognizedLectioActivityPage(document, finalUrl);
   const title = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*(?:s)?titel|activity[-_ ]*title/i)
     ?? valueBesideLabel(document, /^(?:Aktivitets)?titel\s*:?$/i)
     ?? composite.title;
@@ -315,7 +367,8 @@ export function parseLectioActivityDetails(
     ?? valueBesideLabel(document, /^(?:Aktivitets)?note\s*:?$/i)
     ?? composite.note;
   const bodyText = cleanText(textContent(document));
-  const structuralMarkers = Number(composite.found)
+  const structuralMarkers = Number(recognizedActivityPage)
+    + Number(composite.found)
     + Number(Boolean(title || note))
     + Number(/\bLektier\b/i.test(bodyText) && /\bmodul\b/i.test(bodyText));
 
@@ -356,7 +409,10 @@ export function parseLectioSchedule(html: string, finalUrl = "https://www.lectio
       datedCells += 1;
       structuralMarkers += 1;
     }
-    if (node.tagName === "a" && (hasClass(node, "s2skemabrik") || hasClass(node, "s2bgbox"))) {
+    const isDatedScheduleBrick = node.tagName === "a"
+      && (hasClass(node, "s2skemabrik") || hasClass(node, "s2bgbox"))
+      && ancestors.some((ancestor) => ancestor.tagName === "td" && Boolean(getAttr(ancestor, "data-date")));
+    if (isDatedScheduleBrick) {
       eventCandidates += 1;
       const event = parseBrick(node, ancestors);
       if (event) {

@@ -6,6 +6,7 @@ const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
 const REFRESH_TOKEN_KEY = "lectioSyncFirefoxGoogleRefreshTokenV1";
 const EXPIRY_SKEW_MS = 60_000;
+const DESKTOP_CLIENT_ID_PATTERN = /^\d{6,}-[a-z0-9_-]+\.apps\.googleusercontent\.com$/iu;
 
 interface TokenResponse {
   access_token?: string;
@@ -22,7 +23,19 @@ interface CachedAccessToken {
 }
 
 let cachedAccessToken: CachedAccessToken | undefined;
-let tokenRequest: Promise<string> | undefined;
+let interactiveTokenRequest: Promise<string> | undefined;
+let nonInteractiveTokenRequest: Promise<string> | undefined;
+let authorizationEpoch = 0;
+
+function assertCurrentAuthorizationEpoch(epoch: number): void {
+  if (epoch !== authorizationEpoch) {
+    throw new Error("Google authorization was disconnected.");
+  }
+}
+
+export function isValidFirefoxDesktopClientId(clientId: string): boolean {
+  return DESKTOP_CLIENT_ID_PATTERN.test(clientId);
+}
 
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -54,8 +67,13 @@ async function readRefreshToken(): Promise<string | undefined> {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-async function storeRefreshToken(token: string): Promise<void> {
+async function storeRefreshToken(token: string, epoch: number): Promise<void> {
+  assertCurrentAuthorizationEpoch(epoch);
   await browser.storage.local.set({ [REFRESH_TOKEN_KEY]: token });
+  if (epoch !== authorizationEpoch) {
+    await browser.storage.local.remove(REFRESH_TOKEN_KEY);
+    assertCurrentAuthorizationEpoch(epoch);
+  }
 }
 
 async function clearRefreshToken(): Promise<void> {
@@ -79,7 +97,8 @@ async function tokenEndpoint(params: URLSearchParams): Promise<TokenResponse> {
   return body;
 }
 
-function cacheToken(response: TokenResponse): string {
+function cacheToken(response: TokenResponse, epoch: number): string {
+  assertCurrentAuthorizationEpoch(epoch);
   if (!response.access_token) throw new Error("Google OAuth did not return an access token.");
   const granted = new Set((response.scope ?? GOOGLE_CALENDAR_SCOPE).split(/\s+/u));
   if (!granted.has(GOOGLE_CALENDAR_SCOPE)) {
@@ -92,23 +111,25 @@ function cacheToken(response: TokenResponse): string {
   return response.access_token;
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<string> {
+async function refreshAccessToken(refreshToken: string, epoch: number): Promise<string> {
   try {
     const response = await tokenEndpoint(new URLSearchParams({
       client_id: __GOOGLE_FIREFOX_OAUTH_CLIENT_ID__,
+      client_secret: __GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET__,
       refresh_token: refreshToken,
       grant_type: "refresh_token"
     }));
-    return cacheToken(response);
+    return cacheToken(response, epoch);
   } catch (error) {
     if (/invalid_grant|revoked|expired/i.test(String(error))) await clearRefreshToken();
     throw error;
   }
 }
 
-async function authorizeInteractively(): Promise<string> {
-  if (__GOOGLE_FIREFOX_OAUTH_CLIENT_ID__.startsWith("REPLACE_WITH_")) {
-    throw new Error("Firefox Google OAuth is not configured.");
+async function authorizeInteractively(epoch: number): Promise<string> {
+  assertCurrentAuthorizationEpoch(epoch);
+  if (!isValidFirefoxDesktopClientId(__GOOGLE_FIREFOX_OAUTH_CLIENT_ID__)) {
+    throw new Error("Firefox Google OAuth is not configured with a valid Google Desktop client ID.");
   }
   const redirectUri = firefoxLoopbackRedirect(browser.identity.getRedirectURL());
   const verifier = randomBase64Url(64);
@@ -127,8 +148,13 @@ async function authorizeInteractively(): Promise<string> {
   }).toString();
 
   const resultUrl = await browser.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true });
+  assertCurrentAuthorizationEpoch(epoch);
   if (!resultUrl) throw new Error("Google authorization was cancelled.");
   const result = new URL(resultUrl);
+  const expectedRedirect = new URL(redirectUri);
+  if (result.origin !== expectedRedirect.origin || result.pathname !== expectedRedirect.pathname) {
+    throw new Error("Google OAuth returned an invalid redirect URL.");
+  }
   if (result.searchParams.get("state") !== state) throw new Error("Google OAuth state verification failed.");
   const oauthError = result.searchParams.get("error");
   if (oauthError) throw new Error(`Google authorization failed: ${oauthError}`);
@@ -137,37 +163,48 @@ async function authorizeInteractively(): Promise<string> {
 
   const response = await tokenEndpoint(new URLSearchParams({
     client_id: __GOOGLE_FIREFOX_OAUTH_CLIENT_ID__,
+    client_secret: __GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET__,
     code,
     code_verifier: verifier,
     redirect_uri: redirectUri,
     grant_type: "authorization_code"
   }));
+  assertCurrentAuthorizationEpoch(epoch);
   if (!response.refresh_token) throw new Error("Google OAuth did not return a refresh token.");
-  await storeRefreshToken(response.refresh_token);
-  return cacheToken(response);
+  await storeRefreshToken(response.refresh_token, epoch);
+  return cacheToken(response, epoch);
 }
 
-async function obtainToken(interactive: boolean): Promise<string> {
+async function obtainToken(interactive: boolean, epoch: number): Promise<string> {
+  assertCurrentAuthorizationEpoch(epoch);
   if (cachedAccessToken && cachedAccessToken.expiresAt - EXPIRY_SKEW_MS > Date.now()) {
     return cachedAccessToken.token;
   }
   const refreshToken = await readRefreshToken();
+  assertCurrentAuthorizationEpoch(epoch);
   if (refreshToken) {
     try {
-      return await refreshAccessToken(refreshToken);
+      return await refreshAccessToken(refreshToken, epoch);
     } catch (error) {
       if (!interactive) throw error;
     }
   }
   if (!interactive) throw new Error("Google authentication is required.");
-  return authorizeInteractively();
+  return authorizeInteractively(epoch);
 }
 
 export async function getFirefoxGoogleToken(interactive: boolean): Promise<string> {
-  tokenRequest ??= obtainToken(interactive).finally(() => {
-    tokenRequest = undefined;
+  const pending = interactive ? interactiveTokenRequest : nonInteractiveTokenRequest;
+  if (pending) return pending;
+
+  const epoch = authorizationEpoch;
+  const request = obtainToken(interactive, epoch).finally(() => {
+    if (interactive && interactiveTokenRequest === request) interactiveTokenRequest = undefined;
+    if (!interactive && nonInteractiveTokenRequest === request) nonInteractiveTokenRequest = undefined;
   });
-  return tokenRequest;
+  if (interactive) interactiveTokenRequest = request;
+  else nonInteractiveTokenRequest = request;
+  return request;
 }
 
 export function invalidateFirefoxAccessToken(token: string): void {
@@ -175,6 +212,9 @@ export function invalidateFirefoxAccessToken(token: string): void {
 }
 
 export async function disconnectFirefoxGoogle(): Promise<void> {
+  authorizationEpoch += 1;
+  interactiveTokenRequest = undefined;
+  nonInteractiveTokenRequest = undefined;
   const refreshToken = await readRefreshToken();
   const accessToken = cachedAccessToken?.token;
   await clearRefreshToken();

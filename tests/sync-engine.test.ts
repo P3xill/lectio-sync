@@ -80,6 +80,16 @@ function htmlResponse(html: string, status = 200): Response {
   return response;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("sync engine", () => {
   beforeAll(async () => {
     [scheduleHtml, emptyHtml, loginHtml, activityDetailHtml] = await Promise.all([
@@ -121,6 +131,53 @@ describe("sync engine", () => {
     expect(storageMock.state).toMatchObject({ status: "healthy", rotationCursor: 0 });
     expect(browserMock.alarms.create).toHaveBeenCalledWith("lectio-sync-periodic", { periodInMinutes: 10 });
     expect(browserMock.notifications.create).not.toHaveBeenCalled();
+  });
+
+  it("recovers from one transient malformed schedule response", async () => {
+    const malformed = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Loading</a></td></tr></table>';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(htmlResponse(malformed))
+      .mockResolvedValueOnce(htmlResponse(scheduleHtml))
+      .mockResolvedValueOnce(htmlResponse(emptyHtml))
+      .mockResolvedValueOnce(htmlResponse(emptyHtml))
+      .mockResolvedValueOnce(htmlResponse(activityDetailHtml));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(runSync()).resolves.toMatchObject({ inserted: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(googleMock.listManaged).toHaveBeenCalledOnce();
+    expect(googleMock.apply).toHaveBeenCalledOnce();
+  });
+
+  it("still fails closed when malformed schedule responses persist", async () => {
+    const malformed = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Broken</a></td></tr></table>';
+    const fetchMock = vi.fn(async () => htmlResponse(malformed));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(runSync()).rejects.toMatchObject({ code: "LECTIO_UNEXPECTED_PAGE" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(googleMock.listManaged).not.toHaveBeenCalled();
+    expect(googleMock.apply).not.toHaveBeenCalled();
+  });
+
+  it("shares one in-flight sync across overlapping callers", async () => {
+    const firstFetch = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => firstFetch.promise)
+      .mockImplementation(async () => htmlResponse(emptyHtml));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = runSync();
+    const second = runSync();
+
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    firstFetch.resolve(htmlResponse(emptyHtml));
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(googleMock.listManaged).toHaveBeenCalledOnce();
+    expect(googleMock.apply).toHaveBeenCalledOnce();
+    expect(browserMock.alarms.create).toHaveBeenCalledOnce();
   });
 
   it("notifies once when a previously synced module becomes cancelled", async () => {
@@ -222,10 +279,118 @@ describe("sync engine", () => {
     await expect(runSync()).rejects.toMatchObject({
       code: "GOOGLE_API",
       calendarMayHaveChanged: true,
-      message: expect.stringContaining("Some changes may have been applied")
+      message: expect.stringContaining("Some changes may have been applied"),
+      technicalDetail: "later operation failed"
     });
     expect(storageMock.state?.lastError).toMatchObject({ calendarMayHaveChanged: true });
     expect(storageMock.state?.sourceSnapshots).toEqual({});
+  });
+
+  it("reports possible calendar changes when persistence fails after apply", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    storageMock.patchState
+      .mockImplementationOnce(async (patch: Partial<ExtensionState>) => {
+        storageMock.state = { ...storageMock.state!, ...patch };
+        return storageMock.state;
+      })
+      .mockRejectedValueOnce(new Error("storage unavailable after apply"));
+
+    await expect(runSync()).rejects.toMatchObject({
+      code: "UNKNOWN",
+      calendarMayHaveChanged: true,
+      message: expect.stringContaining("Some changes may have been applied"),
+      technicalDetail: expect.stringContaining("storage unavailable after apply")
+    });
+    expect(googleMock.apply).toHaveBeenCalledOnce();
+    expect(storageMock.state?.lastError).toMatchObject({ calendarMayHaveChanged: true });
+    expect(storageMock.state?.lastError?.message).not.toContain("before changing your calendar");
+  });
+
+  it("reports possible calendar changes when alarm scheduling fails after apply", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    browserMock.alarms.create.mockRejectedValueOnce(new Error("alarm unavailable after apply"));
+
+    await expect(runSync()).rejects.toMatchObject({
+      code: "UNKNOWN",
+      calendarMayHaveChanged: true,
+      message: expect.stringContaining("Some changes may have been applied"),
+      technicalDetail: expect.stringContaining("alarm unavailable after apply")
+    });
+    expect(googleMock.apply).toHaveBeenCalledOnce();
+    expect(storageMock.state?.lastError).toMatchObject({ calendarMayHaveChanged: true });
+    expect(storageMock.state?.lastError?.message).not.toContain("before changing your calendar");
+  });
+
+  it("abandons stale work before apply when the connected account changes", async () => {
+    const managed = deferred<never[]>();
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    googleMock.listManaged.mockReturnValueOnce(managed.promise);
+
+    const sync = runSync();
+    await vi.waitFor(() => expect(googleMock.listManaged).toHaveBeenCalledOnce());
+    const switched = state({
+      status: "ready",
+      lectioAccount: {
+        schoolId: "99",
+        studentId: "100",
+        connectedAt: "2026-08-07T00:00:00Z"
+      },
+      sourceSnapshots: {
+        fresh: { fingerprint: "fresh", missingStreak: 0, lastSeenAt: "2026-08-07T00:00:00Z" }
+      }
+    });
+    storageMock.state = switched;
+    managed.resolve([]);
+
+    await expect(sync).rejects.toMatchObject({
+      code: "UNKNOWN",
+      message: expect.stringContaining("before calendar updates began")
+    });
+    expect(googleMock.apply).not.toHaveBeenCalled();
+    expect(storageMock.state).toBe(switched);
+    expect(storageMock.state?.lastError).toBeUndefined();
+  });
+
+  it("does not overwrite a newly selected calendar when identity changes during apply", async () => {
+    const applied = deferred<{
+      inserted: number;
+      updated: number;
+      deleted: number;
+      unchanged: number;
+      fetched: number;
+      completedAt: string;
+    }>();
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    googleMock.apply.mockReturnValueOnce(applied.promise);
+
+    const sync = runSync();
+    await vi.waitFor(() => expect(googleMock.apply).toHaveBeenCalledOnce());
+    const switched = state({
+      status: "ready",
+      googleCalendarId: "new-calendar",
+      googleCalendarName: "New Lectio Calendar",
+      sourceSnapshots: {
+        fresh: { fingerprint: "fresh", missingStreak: 0, lastSeenAt: "2026-08-07T00:00:00Z" }
+      }
+    });
+    storageMock.state = switched;
+    applied.resolve({
+      inserted: 0,
+      updated: 0,
+      deleted: 0,
+      unchanged: 0,
+      fetched: 0,
+      completedAt: "2026-08-07T12:00:00Z"
+    });
+
+    await expect(sync).rejects.toMatchObject({
+      code: "UNKNOWN",
+      calendarMayHaveChanged: true,
+      message: expect.stringContaining("previous calendar may have been updated")
+    });
+    expect(storageMock.state).toBe(switched);
+    expect(storageMock.state?.lastError).toBeUndefined();
+    expect(browserMock.alarms.create).not.toHaveBeenCalled();
   });
 
   it("checks disjoint week windows and deduplicates provider events", async () => {

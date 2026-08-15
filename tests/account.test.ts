@@ -33,6 +33,19 @@ describe("Lectio document discovery", () => {
     expect(studentIdFromDocument(document)).toBe("42");
   });
 
+  it("finds the student id in the current URL or a case-variant link parameter", () => {
+    expect(studentIdFromDocument({
+      baseURI: "https://www.lectio.dk/lectio/23/SkemaNy.aspx?type=elev&elevid=42",
+      querySelectorAll: () => []
+    } as unknown as Document)).toBe("42");
+    expect(studentIdFromDocument({
+      baseURI: "https://www.lectio.dk/lectio/23/SkemaNy.aspx",
+      querySelectorAll: () => [
+        { href: "https://www.lectio.dk/lectio/23/BD/UserReservations.aspx?ElevID=43" }
+      ]
+    } as unknown as Document)).toBe("43");
+  });
+
   it("rejects student links when the document itself is not an exact Lectio school page", () => {
     const document = {
       baseURI: "https://evil.example/lectio/23/",

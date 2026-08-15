@@ -18,11 +18,15 @@ export function studentIdFromDocument(document: Document): string | undefined {
   const schoolId = schoolIdFromUrl(document.baseURI);
   if (!schoolId) return undefined;
   const schoolPath = `/lectio/${schoolId}/`;
-  const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="elevid="]'));
-  for (const anchor of candidates) {
+  const candidates = [document.baseURI, ...Array.from(
+    document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    (anchor) => anchor.href
+  )];
+  for (const candidate of candidates) {
     try {
-      const url = new URL(anchor.href, document.baseURI);
-      const studentId = url.searchParams.get("elevid");
+      const url = new URL(candidate, document.baseURI);
+      const studentId = Array.from(url.searchParams.entries())
+        .find(([key]) => key.toLowerCase() === "elevid")?.[1];
       if (
         url.protocol === "https:"
         && url.hostname === "www.lectio.dk"
@@ -31,7 +35,7 @@ export function studentIdFromDocument(document: Document): string | undefined {
         && /^\d{1,32}$/.test(studentId)
       ) return studentId;
     } catch {
-      // Ignore malformed links from page content.
+      // Ignore malformed URLs from page content.
     }
   }
   return undefined;
