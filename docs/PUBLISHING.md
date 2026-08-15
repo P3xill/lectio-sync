@@ -16,7 +16,7 @@ Edge, Opera, and Vivaldi can often load Chromium extension code, but Lectio Sync
 
 1. Create a public GitHub repository and push the source without `dist`, `artifacts`, `.build`, `.env`, signing files, or credentials.
 2. Enable GitHub private vulnerability reporting and branch protection for `main`.
-3. Publish a project homepage containing the product description and links to `PRIVACY.md`, `SECURITY.md`, and the license.
+3. Use the published project homepage at `https://lectio-sync.johannespeulicke.chatgpt.site`, with privacy and support pages at `/privacy` and `/support`.
 4. Create a Google Cloud project, enable the Google Calendar API, configure the OAuth consent screen, and use the narrow `calendar.app.created` scope.
 5. After the Chrome Web Store assigns the extension ID, create a Chrome Extension OAuth client bound to that exact ID.
 6. Create a Web application OAuth client for Brave whose only authorized redirect URI is `https://EXTENSION_ID.chromiumapp.org/`.

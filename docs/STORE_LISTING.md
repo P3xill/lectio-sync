@@ -1,5 +1,12 @@
 # Store listing source text
 
+## Public URLs
+
+- **Homepage:** https://lectio-sync.johannespeulicke.chatgpt.site
+- **Privacy policy:** https://lectio-sync.johannespeulicke.chatgpt.site/privacy
+- **Support:** https://lectio-sync.johannespeulicke.chatgpt.site/support
+- **Source:** https://github.com/P3xill/lectio-sync
+
 ## Short description
 
 Privately sync your Lectio timetable to a dedicated calendar from your browser.

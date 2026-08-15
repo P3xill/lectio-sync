@@ -1,0 +1,42 @@
+{
+  "version": "0.2.0",
+  "generated": "2026-08-15",
+  "assets": [
+    {
+      "file": "browser-store-screenshot-1280x800.png",
+      "width": 1280,
+      "height": 800,
+      "sha256": "3af375a8eb0fbefd436307712f5e708aecbc0ad1736d17254bea525475176c47"
+    },
+    {
+      "file": "mac-app-store-screenshot-1280x800.png",
+      "width": 1280,
+      "height": 800,
+      "sha256": "a1c19ffdb860127821f5dd99ab46db4a2129a6e32350ce85ad2f1fe4ef9131ed"
+    },
+    {
+      "file": "chrome-small-promo-440x280.png",
+      "width": 440,
+      "height": 280,
+      "sha256": "3ffb8360fd80cb1c3dbbf35ff5e8643161423d0edd46656811cbdc336e1f66c8"
+    },
+    {
+      "file": "chrome-marquee-1400x560.png",
+      "width": 1400,
+      "height": 560,
+      "sha256": "c98aad72dcb84bdf5e644a85c7788af09b98fa1e403cb3e881e40645ca843d44"
+    },
+    {
+      "file": "social-preview-1200x630.png",
+      "width": 1200,
+      "height": 630,
+      "sha256": "56bf4610b253b1108df8e030bea1e4cc4d43c5ddcc10c13bbcf44d33d1e567a8"
+    },
+    {
+      "file": "store-icon-128.png",
+      "width": 128,
+      "height": 128,
+      "sha256": "921ffc363564aaf7db3a2c87b94c8a8e728ba24f183122929d909a7ceae7d0ee"
+    }
+  ]
+}

@@ -1,5 +1,9 @@
 # Lectio Sync
 
+- Homepage: https://lectio-sync.johannespeulicke.chatgpt.site
+- Privacy: https://lectio-sync.johannespeulicke.chatgpt.site/privacy
+- Support: https://lectio-sync.johannespeulicke.chatgpt.site/support
+
 Lectio Sync is an open-source, local-first desktop browser extension that keeps a student's Lectio timetable in a dedicated calendar. It supports Chrome through Chrome Identity, Brave through a browser-managed Web OAuth callback, Firefox through a PKCE-protected installed-app OAuth flow, and Safari through a small EventKit bridge generated as an Xcode app extension.
 
 There is no Lectio password form, no MitID automation, and no hosted backend. The student signs into the real `lectio.dk` website. The extension then reuses that browser session for read-only timetable requests.
