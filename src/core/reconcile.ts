@@ -14,12 +14,18 @@ export function reconcileEvents(
   nowIso: string
 ): ReconciliationResult {
   const desiredBySource = new Map(desired.map((event) => [event.sourceId, event]));
-  const existingBySource = new Map(existing.map((event) => [event.sourceId, event]));
+  const existingBySource = new Map<string, ManagedCalendarEvent[]>();
+  for (const event of existing) {
+    const matches = existingBySource.get(event.sourceId);
+    if (matches) matches.push(event);
+    else existingBySource.set(event.sourceId, [event]);
+  }
   const nextSnapshots: Record<string, SourceSnapshotState> = {};
   const operations: ReconciliationResult["operations"] = [];
 
   for (const event of desired) {
-    const current = existingBySource.get(event.sourceId);
+    const matches = existingBySource.get(event.sourceId) ?? [];
+    const current = matches.find((candidate) => candidate.id === event.id) ?? matches[0];
     nextSnapshots[event.sourceId] = {
       fingerprint: event.fingerprint,
       missingStreak: 0,
@@ -33,6 +39,12 @@ export function reconcileEvents(
       operations.push({ kind: "update", event, eventId: current.id });
     } else {
       operations.push({ kind: "noop", eventId: current.id, sourceId: event.sourceId });
+    }
+
+    for (const duplicate of matches) {
+      if (duplicate !== current) {
+        operations.push({ kind: "delete", eventId: duplicate.id, sourceId: duplicate.sourceId });
+      }
     }
   }
 

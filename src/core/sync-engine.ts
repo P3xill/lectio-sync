@@ -5,6 +5,11 @@ import { toCalendarEvent } from "./calendar-event";
 import { reconcileEvents } from "./reconcile";
 import { GoogleApiError, GoogleCalendarAdapter } from "./google-calendar";
 import { SafariCalendarAdapter } from "./safari-calendar";
+import {
+  fetchLectioPage,
+  LectioPageTooLargeError,
+  LectioSessionTabError
+} from "./lectio-session";
 import { getState, patchState } from "./storage";
 import type {
   CalendarEventInput,
@@ -16,6 +21,19 @@ import type {
 } from "./types";
 
 const ALARM_NAME = "lectio-sync-periodic";
+const MAX_EVENTS_PER_SYNC = 500;
+const STALE_SYNC = Symbol("stale-sync");
+
+interface SyncIdentity {
+  schoolId: string;
+  studentId: string;
+  lectioConnectedAt: string;
+  googleCalendarId: string;
+}
+
+type StaleSyncError = SafeError & { [STALE_SYNC]: true };
+
+let activeSync: Promise<SyncSummary> | undefined;
 
 function calendarAdapter() {
   return __TARGET_BROWSER__ === "safari" ? new SafariCalendarAdapter() : new GoogleCalendarAdapter();
@@ -27,6 +45,55 @@ function makeSafeError(code: SafeError["code"], message: string, technicalDetail
     message,
     occurredAt: new Date().toISOString(),
     technicalDetail: technicalDetail?.slice(0, 500)
+  };
+}
+
+function syncIdentity(state: ExtensionState): SyncIdentity | undefined {
+  if (!state.lectioAccount || !state.googleCalendarId) return undefined;
+  return {
+    schoolId: state.lectioAccount.schoolId,
+    studentId: state.lectioAccount.studentId,
+    lectioConnectedAt: state.lectioAccount.connectedAt,
+    googleCalendarId: state.googleCalendarId
+  };
+}
+
+function hasSyncIdentity(state: ExtensionState, expected: SyncIdentity): boolean {
+  const current = syncIdentity(state);
+  return Boolean(
+    current
+    && current.schoolId === expected.schoolId
+    && current.studentId === expected.studentId
+    && current.lectioConnectedAt === expected.lectioConnectedAt
+    && current.googleCalendarId === expected.googleCalendarId
+  );
+}
+
+function staleSyncError(calendarMayHaveChanged: boolean): StaleSyncError {
+  return {
+    ...makeSafeError(
+      "UNKNOWN",
+      calendarMayHaveChanged
+        ? "Synchronization was cancelled because the connected account or calendar changed. The previous calendar may have been updated."
+        : "Synchronization was cancelled because the connected account or calendar changed before calendar updates began."
+    ),
+    ...(calendarMayHaveChanged ? { calendarMayHaveChanged: true } : {}),
+    [STALE_SYNC]: true
+  };
+}
+
+async function assertSyncIdentity(expected: SyncIdentity, calendarMayHaveChanged: boolean): Promise<void> {
+  if (!hasSyncIdentity(await getState(), expected)) {
+    throw staleSyncError(calendarMayHaveChanged);
+  }
+}
+
+function markCalendarMayHaveChanged(error: SafeError): SafeError {
+  if (error.calendarMayHaveChanged) return error;
+  return {
+    ...error,
+    message: "Calendar synchronization was interrupted. Some changes may have been applied; the next sync will reconcile them.",
+    calendarMayHaveChanged: true
   };
 }
 
@@ -68,36 +135,39 @@ async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: 
     week: lectioWeekValue(weekDate)
   });
   const url = `https://www.lectio.dk/lectio/${encodeURIComponent(schoolId)}/SkemaNy.aspx?${params}`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-store",
-      redirect: "manual",
-      referrerPolicy: "no-referrer",
-      headers: { Accept: "text/html,application/xhtml+xml" }
-    });
-  } catch (error) {
-    throw makeSafeError("LECTIO_NETWORK", "Lectio could not be reached.", String(error));
-  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response;
+    try {
+      response = await fetchLectioPage(url, "no-store");
+    } catch (error) {
+      if (error instanceof LectioPageTooLargeError) {
+        throw makeSafeError("LECTIO_UNEXPECTED_PAGE", error.message);
+      }
+      if (error instanceof LectioSessionTabError) {
+        throw makeSafeError("LECTIO_NETWORK", error.message, String(error));
+      }
+      throw makeSafeError("LECTIO_NETWORK", "Lectio could not be reached.", String(error));
+    }
 
-  if (response.type === "opaqueredirect" || response.status === 0 || (response.status >= 300 && response.status < 400)) {
-    throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
-  }
-  if (!response.ok) {
-    throw makeSafeError("LECTIO_NETWORK", `Lectio returned HTTP ${response.status}.`);
-  }
-
-  const html = await response.text();
-  try {
-    return parseLectioSchedule(html, response.url).events;
-  } catch (error) {
-    if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
+    if (response.type === "opaqueredirect" || response.status === 0 || (response.status >= 300 && response.status < 400)) {
       throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
     }
-    throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned an unexpected page.", String(error));
+    if (!response.ok) {
+      throw makeSafeError("LECTIO_NETWORK", `Lectio returned HTTP ${response.status}.`);
+    }
+
+    try {
+      return parseLectioSchedule(response.html, response.url).events;
+    } catch (error) {
+      if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
+        throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
+      }
+      if (attempt === 0) continue;
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned an unexpected page.", String(error));
+    }
   }
+
+  throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned an unexpected page.");
 }
 
 function trustedActivityUrl(rawUrl: string | undefined, schoolId: string, sourceId: string): string | undefined {
@@ -127,17 +197,16 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
   const url = trustedActivityUrl(event.sourceUrl, schoolId, event.sourceId);
   if (!url) return event;
 
-  let response: Response;
+  let response;
   try {
-    response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-      cache: "no-cache",
-      redirect: "manual",
-      referrerPolicy: "no-referrer",
-      headers: { Accept: "text/html,application/xhtml+xml" }
-    });
+    response = await fetchLectioPage(url, "no-cache");
   } catch (error) {
+    if (error instanceof LectioPageTooLargeError) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", error.message);
+    }
+    if (error instanceof LectioSessionTabError) {
+      throw makeSafeError("LECTIO_NETWORK", error.message, String(error));
+    }
     throw makeSafeError("LECTIO_NETWORK", "A Lectio activity page could not be reached.", String(error));
   }
 
@@ -148,9 +217,8 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
     throw makeSafeError("LECTIO_NETWORK", `Lectio returned HTTP ${response.status} for an activity page.`);
   }
 
-  const html = await response.text();
   try {
-    const details = parseLectioActivityDetails(html, response.url || url);
+    const details = parseLectioActivityDetails(response.html, response.url || url);
     return {
       ...event,
       title: details.title ?? event.title,
@@ -160,14 +228,14 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
     if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
       throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
     }
-    return event;
+    throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned an unexpected activity page.", String(error));
   }
 }
 
 async function enrichActivityDetails(events: LectioEvent[], schoolId: string): Promise<LectioEvent[]> {
   const enriched = [...events];
   let cursor = 0;
-  const workerCount = Math.min(4, events.length);
+  const workerCount = Math.min(8, events.length);
   await Promise.all(Array.from({ length: workerCount }, async () => {
     while (cursor < events.length) {
       const index = cursor++;
@@ -216,14 +284,14 @@ async function notifyCancellations(events: CalendarEventInput[]): Promise<void> 
 }
 
 function errorFromUnknown(error: unknown): SafeError {
-  if (typeof error === "object" && error && "code" in error && "occurredAt" in error) {
-    return error as SafeError;
-  }
   if (error instanceof GoogleApiError && error.status === 401) {
     return makeSafeError("GOOGLE_AUTH_REQUIRED", "Reconnect Google Calendar.", error.message);
   }
   if (error instanceof GoogleApiError) {
     return makeSafeError("GOOGLE_API", "Google Calendar could not be updated.", error.message);
+  }
+  if (typeof error === "object" && error && "code" in error && "occurredAt" in error) {
+    return error as SafeError;
   }
   if (__TARGET_BROWSER__ === "safari" && /calendar bridge|permission|calendar/i.test(String(error))) {
     return makeSafeError("SAFARI_CALENDAR_REQUIRED", "Allow calendar access in the Lectio Sync app.", String(error));
@@ -231,12 +299,17 @@ function errorFromUnknown(error: unknown): SafeError {
   return makeSafeError("UNKNOWN", "Synchronization stopped before changing your calendar.", String(error));
 }
 
+async function resetSyncAlarm(intervalMinutes: number): Promise<string> {
+  await browser.alarms.clear(ALARM_NAME);
+  await browser.alarms.create(ALARM_NAME, { periodInMinutes: intervalMinutes });
+  return new Date(Date.now() + intervalMinutes * 60_000).toISOString();
+}
+
 export async function scheduleNextSync(state?: ExtensionState): Promise<void> {
   const current = state ?? await getState();
-  await browser.alarms.clear(ALARM_NAME);
-  await browser.alarms.create(ALARM_NAME, { periodInMinutes: current.settings.intervalMinutes });
+  const nextSyncAt = await resetSyncAlarm(current.settings.intervalMinutes);
   await patchState({
-    nextSyncAt: new Date(Date.now() + current.settings.intervalMinutes * 60_000).toISOString()
+    nextSyncAt
   });
 }
 
@@ -252,14 +325,15 @@ export async function connectCalendar(interactive = true): Promise<ExtensionStat
   });
 }
 
-export async function runSync(): Promise<SyncSummary> {
+async function performSync(): Promise<SyncSummary> {
   const state = await getState();
   if (!state.lectioAccount) throw makeSafeError("LECTIO_AUTH_REQUIRED", "Connect Lectio first.");
   if (!state.googleCalendarId) throw makeSafeError("GOOGLE_AUTH_REQUIRED", "Connect Google Calendar first.");
-
-  await patchState({ status: "syncing", lastAttemptAt: new Date().toISOString(), lastError: undefined });
+  const identity = syncIdentity(state)!;
+  let calendarMutationStarted = false;
 
   try {
+    await patchState({ status: "syncing", lastAttemptAt: new Date().toISOString(), lastError: undefined });
     const baseMonday = getIsoWeek(new Date()).monday;
     const initialSync = !state.lastSuccessAt;
     const offsets = getFetchWeekOffsets(initialSync, state.settings.horizonWeeks, state.rotationCursor);
@@ -273,6 +347,9 @@ export async function runSync(): Promise<SyncSummary> {
     }
 
     const uniqueDesiredSource = [...new Map(desiredSource.map((event) => [event.sourceId, event])).values()];
+    if (uniqueDesiredSource.length > MAX_EVENTS_PER_SYNC) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned too many events in one synchronization.");
+    }
     const enrichedSource = await enrichActivityDetails(uniqueDesiredSource, state.lectioAccount.schoolId);
     const calendarSource: CalendarEventInput[] = [];
     for (const event of enrichedSource) {
@@ -293,7 +370,24 @@ export async function runSync(): Promise<SyncSummary> {
     const uniqueExisting = [...new Map(existing.map((event) => [event.id, event])).values()];
     const nowIso = new Date().toISOString();
     const reconciliation = reconcileEvents(desired, uniqueExisting, state.sourceSnapshots, nowIso);
-    const summary = await adapter.apply(state.googleCalendarId, reconciliation.operations);
+    if (reconciliation.operations.length > MAX_EVENTS_PER_SYNC) {
+      throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Too many calendar changes were required in one synchronization.");
+    }
+    await assertSyncIdentity(identity, false);
+    let summary: SyncSummary;
+    calendarMutationStarted = true;
+    try {
+      summary = await adapter.apply(state.googleCalendarId, reconciliation.operations);
+    } catch (error) {
+      if (__TARGET_BROWSER__ === "safari") throw error;
+      const interrupted = errorFromUnknown(error);
+      throw {
+        ...interrupted,
+        message: "Calendar synchronization was interrupted. Some changes may have been applied; the next sync will reconcile them.",
+        calendarMayHaveChanged: true
+      } satisfies SafeError;
+    }
+    await assertSyncIdentity(identity, true);
 
     const covered = new Set([
       ...calendarSource.map((event) => event.sourceId),
@@ -312,28 +406,45 @@ export async function runSync(): Promise<SyncSummary> {
       };
     }
 
-    const updated = await patchState({
+    const nextSyncAt = await resetSyncAlarm(state.settings.intervalMinutes);
+    await assertSyncIdentity(identity, true);
+    await patchState({
       status: "healthy",
       lastSuccessAt: nowIso,
       lastAttemptAt: nowIso,
       lastError: undefined,
+      nextSyncAt,
       rotationCursor: initialSync ? 0 : state.rotationCursor + 1,
       sourceSnapshots: nextSnapshots
     });
-    await scheduleNextSync(updated);
     await notifyCancellations(newlyCancelled);
     return summary;
   } catch (error) {
-    const safeError = errorFromUnknown(error);
+    let safeError = errorFromUnknown(error);
+    if (calendarMutationStarted) safeError = markCalendarMayHaveChanged(safeError);
+    if (typeof error === "object" && error !== null && STALE_SYNC in error) {
+      throw safeError;
+    }
     const status = safeError.code === "LECTIO_AUTH_REQUIRED"
       ? "lectio_expired" as const
       : safeError.code === "GOOGLE_AUTH_REQUIRED"
         ? "google_disconnected" as const
         : "safe_error" as const;
-    await patchState({ status, lastError: safeError, nextSyncAt: undefined });
-    await notifyError(safeError);
+    await patchState({ status, lastError: safeError, nextSyncAt: undefined }).catch(() => undefined);
+    await notifyError(safeError).catch(() => undefined);
     throw safeError;
   }
+}
+
+export function runSync(): Promise<SyncSummary> {
+  if (activeSync) return activeSync;
+  const sync = performSync();
+  activeSync = sync;
+  const clearActiveSync = () => {
+    if (activeSync === sync) activeSync = undefined;
+  };
+  void sync.then(clearActiveSync, clearActiveSync);
+  return sync;
 }
 
 export { ALARM_NAME };

@@ -7,6 +7,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     private let calendarName = "Lectio"
     private let markerScheme = "lectiosync"
     private let ownedCalendarIdentifierKey = "LectioSyncOwnedCalendarIdentifierV1"
+    private let maximumOperations = 500
 
     func beginRequest(with context: NSExtensionContext) {
         guard let request = context.inputItems.first as? NSExtensionItem,
@@ -159,16 +160,51 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             UserDefaults.standard.removeObject(forKey: ownedCalendarIdentifierKey)
         }
 
-        guard let source = eventStore.sources.first(where: isGoogleSource) else {
+        let sourceIdentifiers = preferredGoogleSourceIdentifiers()
+        guard !sourceIdentifiers.isEmpty else {
             throw BridgeError("No Google Calendar account was found. Add Google in System Settings › Internet Accounts, then try again.")
         }
 
-        let calendar = EKCalendar(for: .event, eventStore: eventStore)
-        calendar.title = calendarName
-        calendar.source = source
-        try eventStore.saveCalendar(calendar, commit: true)
-        UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
-        return calendar
+        // EventKit doesn't guarantee source order, and a Google account can expose
+        // read-only/delegated CalDAV sources alongside the writable primary source.
+        for sourceIdentifier in sourceIdentifiers {
+            guard let source = eventStore.source(withIdentifier: sourceIdentifier) else { continue }
+
+            if let existing = source.calendars(for: .event).first(where: {
+                $0.title == calendarName && $0.allowsContentModifications && !$0.isSubscribed
+            }) {
+                UserDefaults.standard.set(existing.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+                return existing
+            }
+
+            let calendar = EKCalendar(for: .event, eventStore: eventStore)
+            calendar.title = calendarName
+            calendar.source = source
+            do {
+                try eventStore.saveCalendar(calendar, commit: true)
+                UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+                return calendar
+            } catch {
+                // Revert this failed candidate before trying the next Google source.
+                eventStore.reset()
+            }
+        }
+
+        throw BridgeError("Apple Calendar found your Google account, but none of its sources allow a Lectio calendar to be created. In Apple Calendar, create a calendar named ‘Lectio’ under Google, then try again.")
+    }
+
+    private func preferredGoogleSourceIdentifiers() -> [String] {
+        var identifiers: [String] = []
+        if let defaultSource = eventStore.defaultCalendarForNewEvents?.source,
+           isGoogleSource(defaultSource) {
+            identifiers.append(defaultSource.sourceIdentifier)
+        }
+        for source in eventStore.sources where isGoogleSource(source) {
+            if !identifiers.contains(source.sourceIdentifier) {
+                identifiers.append(source.sourceIdentifier)
+            }
+        }
+        return identifiers
     }
 
     private func ownedCalendar(withIdentifier identifier: String) -> EKCalendar? {
@@ -186,68 +222,85 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     }
 
     private func apply(operations: [[String: Any]], to calendar: EKCalendar) throws -> [String: Any] {
+        guard operations.count <= maximumOperations else {
+            throw BridgeError("Too many calendar changes were requested at once.")
+        }
+
         var inserted = 0
         var updated = 0
         var deleted = 0
         var unchanged = 0
 
-        for operation in operations {
-            guard let kind = operation["kind"] as? String else {
-                throw BridgeError("A calendar change was missing its action.")
-            }
-            switch kind {
-            case "noop":
-                unchanged += 1
-
-            case "insert":
-                guard let input = operation["event"] as? [String: Any] else {
-                    throw BridgeError("A new calendar event was invalid.")
+        do {
+            for operation in operations {
+                guard let kind = operation["kind"] as? String else {
+                    throw BridgeError("A calendar change was missing its action.")
                 }
-                let event = EKEvent(eventStore: eventStore)
-                try populate(event, from: input, calendar: calendar)
-                try eventStore.save(event, span: .thisEvent, commit: false)
-                inserted += 1
-
-            case "update":
-                guard let input = operation["event"] as? [String: Any],
-                      let eventId = operation["eventId"] as? String else {
-                    throw BridgeError("An updated calendar event was invalid.")
-                }
-                let existing = eventStore.event(withIdentifier: eventId)
-                let event: EKEvent
-                if let existing,
-                   existing.calendar.calendarIdentifier == calendar.calendarIdentifier,
-                   readMarker(from: existing.url) != nil {
-                    event = existing
-                    updated += 1
-                } else {
-                    event = EKEvent(eventStore: eventStore)
-                    inserted += 1
-                }
-                try populate(event, from: input, calendar: calendar)
-                try eventStore.save(event, span: .thisEvent, commit: false)
-
-            case "delete":
-                guard let eventId = operation["eventId"] as? String else {
-                    throw BridgeError("A removed calendar event was invalid.")
-                }
-                guard let event = eventStore.event(withIdentifier: eventId) else {
+                switch kind {
+                case "noop":
                     unchanged += 1
-                    continue
-                }
-                guard event.calendar.calendarIdentifier == calendar.calendarIdentifier,
-                      readMarker(from: event.url) != nil else {
-                    throw BridgeError("Lectio Sync refused to remove an event it does not own.")
-                }
-                try eventStore.remove(event, span: .thisEvent, commit: false)
-                deleted += 1
 
-            default:
-                throw BridgeError("An unsupported calendar change was requested.")
+                case "insert":
+                    guard let input = operation["event"] as? [String: Any] else {
+                        throw BridgeError("A new calendar event was invalid.")
+                    }
+                    let event = EKEvent(eventStore: eventStore)
+                    try populate(event, from: input, calendar: calendar)
+                    try eventStore.save(event, span: .thisEvent, commit: false)
+                    inserted += 1
+
+                case "update":
+                    guard let input = operation["event"] as? [String: Any],
+                          let eventId = operation["eventId"] as? String,
+                          let sourceId = input["sourceId"] as? String,
+                          eventId.count <= 512 else {
+                        throw BridgeError("An updated calendar event was invalid.")
+                    }
+                    let existing = eventStore.event(withIdentifier: eventId)
+                    let event: EKEvent
+                    if let existing {
+                        guard existing.calendar.calendarIdentifier == calendar.calendarIdentifier,
+                              let marker = readMarker(from: existing.url),
+                              marker.sourceId == sourceId else {
+                            throw BridgeError("Lectio Sync refused to update an event it does not own.")
+                        }
+                        event = existing
+                        updated += 1
+                    } else {
+                        event = EKEvent(eventStore: eventStore)
+                        inserted += 1
+                    }
+                    try populate(event, from: input, calendar: calendar)
+                    try eventStore.save(event, span: .thisEvent, commit: false)
+
+                case "delete":
+                    guard let eventId = operation["eventId"] as? String,
+                          let sourceId = operation["sourceId"] as? String,
+                          eventId.count <= 512 else {
+                        throw BridgeError("A removed calendar event was invalid.")
+                    }
+                    guard let event = eventStore.event(withIdentifier: eventId) else {
+                        unchanged += 1
+                        continue
+                    }
+                    guard event.calendar.calendarIdentifier == calendar.calendarIdentifier,
+                          let marker = readMarker(from: event.url),
+                          marker.sourceId == sourceId else {
+                        throw BridgeError("Lectio Sync refused to remove an event it does not own.")
+                    }
+                    try eventStore.remove(event, span: .thisEvent, commit: false)
+                    deleted += 1
+
+                default:
+                    throw BridgeError("An unsupported calendar change was requested.")
+                }
             }
-        }
 
-        try eventStore.commit()
+            try eventStore.commit()
+        } catch {
+            eventStore.reset()
+            throw error
+        }
         return [
             "inserted": inserted,
             "updated": updated,
@@ -267,7 +320,13 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
               let end = parseLectioDate(endString),
               start < end,
               let sourceId = input["sourceId"] as? String,
-              let fingerprint = input["fingerprint"] as? String else {
+              let fingerprint = input["fingerprint"] as? String,
+              !summary.isEmpty,
+              summary.count <= 300,
+              description.count <= 5_000,
+              sourceId.range(of: #"^[A-Za-z0-9_./?=&:%+-]{1,500}$"#, options: .regularExpression) != nil,
+              fingerprint.range(of: #"^[0-9a-v]{16,64}$"#, options: .regularExpression) != nil,
+              ((input["location"] as? String)?.count ?? 0) <= 300 else {
             throw BridgeError("A calendar event contained invalid fields.")
         }
 

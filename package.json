@@ -4,6 +4,9 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "npm run build:chrome && npm run build:firefox && npm run build:safari",
@@ -11,12 +14,14 @@
     "build:firefox": "node scripts/build-extension.mjs firefox && node scripts/build-manifest.mjs firefox",
     "build:safari": "node scripts/build-extension.mjs safari && node scripts/build-manifest.mjs safari",
     "check": "tsc --noEmit",
-    "test": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=test-firefox.apps.googleusercontent.com vitest run",
-    "test:watch": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=test-firefox.apps.googleusercontent.com vitest",
-    "test:coverage": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=test-firefox.apps.googleusercontent.com vitest run --coverage",
+    "test": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=123456789012-unit-fixture.apps.googleusercontent.com GOOGLE_BRAVE_OAUTH_CLIENT_ID=123456789012-brave-fixture.apps.googleusercontent.com vitest run",
+    "test:watch": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=123456789012-unit-fixture.apps.googleusercontent.com GOOGLE_BRAVE_OAUTH_CLIENT_ID=123456789012-brave-fixture.apps.googleusercontent.com vitest",
+    "test:coverage": "cross-env GOOGLE_FIREFOX_OAUTH_CLIENT_ID=123456789012-unit-fixture.apps.googleusercontent.com GOOGLE_BRAVE_OAUTH_CLIENT_ID=123456789012-brave-fixture.apps.googleusercontent.com vitest run --coverage",
     "package:chrome": "npm run build:chrome && node scripts/package-chrome.mjs",
     "package:firefox": "npm run build:firefox && node scripts/package-firefox.mjs",
+    "package:firefox-source": "node scripts/package-firefox-source.mjs",
     "convert:safari": "npm run build:safari && node scripts/convert-safari.mjs",
+    "install:safari-dev": "node scripts/install-safari-dev.mjs",
     "verify": "npm run check && npm run test:coverage && npm run build",
     "verify:safari": "npm run convert:safari && xcodebuild -project 'Safari/Lectio Sync/Lectio Sync.xcodeproj' -scheme 'Lectio Sync (macOS)' -configuration Debug -derivedDataPath .build/xcode-macos CODE_SIGNING_ALLOWED=NO build"
   },

@@ -7,6 +7,7 @@ describe("schoolIdFromUrl", () => {
   });
 
   it.each([
+    "http://www.lectio.dk/lectio/23/forside.aspx",
     "https://evil.example/lectio/23/forside.aspx",
     "https://www.lectio.dk.evil.example/lectio/23/",
     "javascript:alert(1)",
@@ -23,11 +24,36 @@ describe("Lectio document discovery", () => {
       baseURI: "https://www.lectio.dk/lectio/23/",
       querySelectorAll: () => [
         { href: "not a url" },
+        { href: "https://evil.example/lectio/23/forside.aspx?elevid=7" },
+        { href: "https://www.lectio.dk/lectio/24/forside.aspx?elevid=8" },
         { href: "https://www.lectio.dk/lectio/23/forside.aspx?elevid=text" },
         { href: "https://www.lectio.dk/lectio/23/forside.aspx?elevid=42" }
       ]
     } as unknown as Document;
     expect(studentIdFromDocument(document)).toBe("42");
+  });
+
+  it("finds the student id in the current URL or a case-variant link parameter", () => {
+    expect(studentIdFromDocument({
+      baseURI: "https://www.lectio.dk/lectio/23/SkemaNy.aspx?type=elev&elevid=42",
+      querySelectorAll: () => []
+    } as unknown as Document)).toBe("42");
+    expect(studentIdFromDocument({
+      baseURI: "https://www.lectio.dk/lectio/23/SkemaNy.aspx",
+      querySelectorAll: () => [
+        { href: "https://www.lectio.dk/lectio/23/BD/UserReservations.aspx?ElevID=43" }
+      ]
+    } as unknown as Document)).toBe("43");
+  });
+
+  it("rejects student links when the document itself is not an exact Lectio school page", () => {
+    const document = {
+      baseURI: "https://evil.example/lectio/23/",
+      querySelectorAll: () => [
+        { href: "https://www.lectio.dk/lectio/23/forside.aspx?elevid=42" }
+      ]
+    } as unknown as Document;
+    expect(studentIdFromDocument(document)).toBeUndefined();
   });
 
   it("rejects login titles and bounds a discovered school name", () => {

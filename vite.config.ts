@@ -10,9 +10,17 @@ export default defineConfig({
   publicDir: "public",
   define: {
     __TARGET_BROWSER__: JSON.stringify(target),
+    __CHROMIUM_OAUTH_MODE__: JSON.stringify(process.env.CHROMIUM_OAUTH_MODE ?? "auto"),
     __GOOGLE_FIREFOX_OAUTH_CLIENT_ID__: JSON.stringify(
       process.env.GOOGLE_FIREFOX_OAUTH_CLIENT_ID
         ?? "REPLACE_WITH_FIREFOX_DESKTOP_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+    ),
+    __GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET__: JSON.stringify(
+      process.env.GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET ?? "unit-fixture-desktop-secret"
+    ),
+    __GOOGLE_BRAVE_OAUTH_CLIENT_ID__: JSON.stringify(
+      process.env.GOOGLE_BRAVE_OAUTH_CLIENT_ID
+        ?? "REPLACE_WITH_BRAVE_WEB_OAUTH_CLIENT_ID.apps.googleusercontent.com"
     )
   },
   build: {
@@ -34,6 +42,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    exclude: ["website/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],

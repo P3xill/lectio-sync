@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lectio Sync store artwork</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --navy: #111a3a;
+        --muted: #596787;
+        --blue: #1757f5;
+        --teal: #008b91;
+        --pale: #f4f7ff;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+
+      body {
+        color: var(--navy);
+        background:
+          radial-gradient(circle at 78% 22%, rgba(21, 87, 245, 0.16), transparent 31%),
+          radial-gradient(circle at 10% 92%, rgba(0, 139, 145, 0.16), transparent 35%),
+          linear-gradient(135deg, #fbfcff 0%, #f2f5ff 54%, #eefbfa 100%);
+      }
+
+      .artboard {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 1.16fr 0.84fr;
+        align-items: center;
+        padding: 72px 92px;
+        isolation: isolate;
+      }
+
+      .artboard::before,
+      .artboard::after {
+        content: "";
+        position: absolute;
+        z-index: -1;
+        border: 1px solid rgba(23, 87, 245, 0.12);
+        border-radius: 50%;
+      }
+
+      .artboard::before { width: 430px; height: 430px; right: -120px; top: -180px; }
+      .artboard::after { width: 260px; height: 260px; left: -110px; bottom: -120px; }
+
+      .copy { max-width: 650px; }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        margin-bottom: 44px;
+        font-size: 25px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+      }
+
+      .brand img {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+        box-shadow: 0 13px 30px rgba(23, 87, 245, 0.22);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        padding: 9px 14px;
+        margin-bottom: 21px;
+        border-radius: 999px;
+        color: var(--teal);
+        background: rgba(0, 139, 145, 0.09);
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 630px;
+        font-size: 65px;
+        line-height: 0.98;
+        letter-spacing: -0.055em;
+      }
+
+      .lead {
+        margin: 28px 0 30px;
+        max-width: 590px;
+        color: var(--muted);
+        font-size: 23px;
+        line-height: 1.42;
+      }
+
+      .benefits { display: flex; flex-wrap: wrap; gap: 10px; }
+
+      .benefit {
+        padding: 11px 15px;
+        border: 1px solid rgba(17, 26, 58, 0.1);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.72);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .visual { display: flex; justify-content: center; align-items: center; }
+
+      .window {
+        position: relative;
+        width: 390px;
+        padding: 17px;
+        border: 1px solid rgba(17, 26, 58, 0.08);
+        border-radius: 30px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 36px 80px rgba(17, 26, 58, 0.19), 0 5px 16px rgba(17, 26, 58, 0.08);
+        transform: rotate(1.2deg);
+      }
+
+      .window::before {
+        content: "Live sync";
+        position: absolute;
+        right: -34px;
+        top: -24px;
+        padding: 10px 15px;
+        border-radius: 999px;
+        color: white;
+        background: var(--blue);
+        font-size: 13px;
+        font-weight: 800;
+        box-shadow: 0 12px 28px rgba(23, 87, 245, 0.28);
+      }
+
+      .window img { display: block; width: 100%; height: auto; border-radius: 18px; }
+      .platform-neutral { display: block; }
+      .safari-only { display: none; }
+
+      body[data-mode="safari"] .platform-neutral { display: none; }
+      body[data-mode="safari"] .safari-only { display: block; }
+      body[data-mode="safari"] .window { width: 365px; }
+
+      body[data-mode="small"] .artboard {
+        display: flex;
+        align-items: center;
+        padding: 28px 30px;
+      }
+      body[data-mode="small"] .copy { max-width: 355px; }
+      body[data-mode="small"] .brand { margin: 0 0 19px; gap: 11px; font-size: 20px; }
+      body[data-mode="small"] .brand img { width: 44px; height: 44px; border-radius: 11px; }
+      body[data-mode="small"] .eyebrow,
+      body[data-mode="small"] .lead,
+      body[data-mode="small"] .benefits,
+      body[data-mode="small"] .visual { display: none; }
+      body[data-mode="small"] h1 { max-width: 370px; font-size: 38px; line-height: 1.02; }
+
+      body[data-mode="marquee"] .artboard { padding: 48px 80px; grid-template-columns: 1.2fr 0.8fr; }
+      body[data-mode="marquee"] .brand { margin-bottom: 24px; }
+      body[data-mode="marquee"] h1 { font-size: 58px; }
+      body[data-mode="marquee"] .lead { margin: 20px 0 0; font-size: 20px; }
+      body[data-mode="marquee"] .benefits { display: none; }
+      body[data-mode="marquee"] .window { width: 315px; }
+
+      body[data-mode="social"] .artboard { padding: 64px 82px; }
+      body[data-mode="social"] .brand { margin-bottom: 28px; }
+      body[data-mode="social"] h1 { font-size: 59px; }
+      body[data-mode="social"] .lead { font-size: 20px; margin: 22px 0 0; }
+      body[data-mode="social"] .benefits { display: none; }
+      body[data-mode="social"] .window { width: 330px; }
+    </style>
+  </head>
+  <body>
+    <main class="artboard">
+      <section class="copy">
+        <div class="brand">
+          <img src="../../public/icons/icon-128.png" alt="" />
+          <span>Lectio Sync</span>
+        </div>
+        <div class="eyebrow">LECTIO → CALENDAR</div>
+        <h1>Your timetable. Already in your calendar.</h1>
+        <p class="lead">Lessons, rooms and homework stay up to date automatically—without ads, analytics or a hosted backend.</p>
+        <div class="benefits">
+          <span class="benefit">Automatic updates</span>
+          <span class="benefit">Private by design</span>
+          <span class="benefit">Chrome · Brave · Firefox · Safari</span>
+        </div>
+      </section>
+      <section class="visual" aria-label="Lectio Sync showing a successful synchronization">
+        <div class="window">
+          <img class="platform-neutral" src="../source/popup-status.png" alt="Lectio Sync is up to date" />
+          <img class="safari-only" style="display: none" src="../source/popup-connected.png" alt="Lectio Sync connected to Lectio and Apple Calendar" />
+        </div>
+      </section>
+    </main>
+    <script>
+      const mode = new URLSearchParams(location.search).get("mode") || "browser";
+      document.body.dataset.mode = mode;
+      if (mode === "safari") {
+        document.querySelector(".platform-neutral").style.display = "none";
+        document.querySelector(".safari-only").style.display = "block";
+      }
+    </script>
+  </body>
+</html>

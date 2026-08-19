@@ -28,6 +28,20 @@ describe("parseLectioSchedule", () => {
     expect(parseLectioSchedule(await fixture("empty-schedule.html")).events).toEqual([]);
   });
 
+  it("ignores informational schedule bricks outside dated day cells", () => {
+    const html = `<table class="s2skema">
+      <tr><td><a class="s2skemabrik s2normal" data-tooltip="School announcement">Announcement</a></td></tr>
+      <tr><td data-date="2026-08-10">
+        <a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=1001"
+          data-tooltip="10/8-2026 08:15 til 09:00"><span class="s2skemabrikcontent">Math</span></a>
+      </td></tr>
+    </table>`;
+
+    expect(parseLectioSchedule(html).events).toEqual([
+      expect.objectContaining({ sourceId: "absid:1001", title: "Math" })
+    ]);
+  });
+
   it("classifies login HTML as authentication required", async () => {
     const html = await fixture("login.html");
     expect(() => parseLectioSchedule(html)).toThrowError(
@@ -45,14 +59,72 @@ describe("parseLectioSchedule", () => {
       .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
-  it("skips malformed bricks without a stable source id or time", () => {
-    const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Bad</a></td></tr></table>';
-    expect(parseLectioSchedule(html).events).toEqual([]);
+  it("requires both a Lectio schedule table and dated cells", () => {
+    expect(() => parseLectioSchedule('<div data-date="2026-08-10"></div>'))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+    expect(() => parseLectioSchedule('<table class="s2skema"></table>'))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
-  it("rejects activity links outside the exact Lectio host", () => {
+  it("fails closed on malformed bricks without a stable source id or time", () => {
+    const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik">Bad</a></td></tr></table>';
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it.each([
+    "31/2-2026 08:00 til 09:00",
+    "29/2-2026 08:00 til 09:00",
+    "10/8-2026 24:00 til 25:00",
+    "10/8-2026 08:60 til 09:00",
+    "10/8-2026 10:00 til 09:00",
+    "10/8-2026 09:00 til 09:00"
+  ])("fails closed on an invalid event interval: %s", (tooltip) => {
+    const html = `<table class="s2skema"><tr><td data-date="2026-08-10">
+      <a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=1001"
+        data-tooltip="${tooltip}">Math</a>
+    </td></tr></table>`;
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("accepts a valid leap-day event and validates a time-only fallback date", () => {
+    const leapDay = `<table class="s2skema"><tr><td data-date="2028-02-29">
+      <a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=1001"
+        data-tooltip="29/2-2028 08:00 til 09:00">Math</a>
+    </td></tr></table>`;
+    expect(parseLectioSchedule(leapDay).events[0]).toMatchObject({
+      start: "2028-02-29T08:00:00",
+      end: "2028-02-29T09:00:00"
+    });
+
+    const invalidFallback = `<table class="s2skema"><tr><td data-date="2026-02-29">
+      <a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=1001"
+        data-tooltip="08:00 til 09:00">Math</a>
+    </td></tr></table>`;
+    expect(() => parseLectioSchedule(invalidFallback))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("fails closed on activity links outside the exact Lectio host", () => {
     const html = '<table class="s2skema"><tr><td data-date="2026-08-10"><a class="s2skemabrik" href="https://evil.example/activity?absid=10" data-tooltip="10/8-2026 08:00 til 09:00"><span class="s2skemabrikcontent">Math</span></a></td></tr></table>';
-    expect(parseLectioSchedule(html).events).toEqual([]);
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("rejects schedules above the per-sync event limit", () => {
+    const bricks = Array.from({ length: 501 }, (_, index) =>
+      `<a class="s2skemabrik" href="/lectio/23/aktivitet/aktivitetforside2.aspx?absid=${index + 1}" data-tooltip="10/8-2026 08:00 til 09:00">Math</a>`
+    ).join("");
+    const html = `<table class="s2skema"><tr><td data-date="2026-08-10">${bricks}</td></tr></table>`;
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
+  });
+
+  it("rejects an excessively node-heavy document before recursive parsing", () => {
+    const html = `<html><body>${"<i></i>".repeat(50_001)}<table class="s2skema"><tr><td data-date="2026-08-10"></td></tr></table></body></html>`;
+    expect(() => parseLectioSchedule(html))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
   it("extracts a current Lectio tooltip title and multiline note", () => {
@@ -94,6 +166,24 @@ describe("parseLectioActivityDetails", () => {
       title: "Vikingetogter",
       note: "Spørgsmål til pararbejde i timen."
     });
+  });
+
+  it("accepts a trusted Lectio activity page that has no optional details", () => {
+    const html = `<html><body>
+      <dialog id="NiceFeaturesForAktivitetDialog"></dialog>
+      <div class="prepend-fonticon-activity s2skemabrik"></div>
+    </body></html>`;
+
+    expect(parseLectioActivityDetails(
+      html,
+      "https://www.lectio.dk/lectio/148/aktivitet/aktivitetforside2.aspx?absid=1001"
+    )).toMatchObject({ title: undefined, note: undefined, structuralMarkers: 1 });
+  });
+
+  it("does not trust activity markers on an unrelated page", () => {
+    const html = '<dialog id="NiceFeaturesForAktivitetDialog"></dialog>';
+    expect(() => parseLectioActivityDetails(html, "https://www.lectio.dk/lectio/148/default.aspx"))
+      .toThrowError(expect.objectContaining<Partial<LectioParserError>>({ code: "UNEXPECTED_PAGE" }));
   });
 
   it("fails closed on login and unrelated pages", async () => {

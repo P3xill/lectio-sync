@@ -7,12 +7,15 @@ vi.mock("webextension-polyfill", () => ({
   }
 }));
 
-import { GoogleApiError, GoogleCalendarAdapter } from "../src/core/google-calendar";
+import { GoogleApiError, GoogleCalendarAdapter, isValidGoogleOAuthClientId } from "../src/core/google-calendar";
 import type { CalendarEventInput } from "../src/core/types";
 
-const getAuthToken = vi.fn(async (): Promise<{ token?: string }> => ({ token: "token" }));
+const getAuthToken = vi.fn(async (): Promise<{ token?: string } | string> => ({ token: "token" }));
 const removeCachedAuthToken = vi.fn(async () => undefined);
 const clearAllCachedAuthTokens = vi.fn(async () => undefined);
+const getManifest = vi.fn(() => ({
+  oauth2: { client_id: "123456789012-unit-fixture.apps.googleusercontent.com" }
+}));
 
 const event: CalendarEventInput = {
   id: "stable",
@@ -43,7 +46,23 @@ describe("GoogleCalendarAdapter", () => {
     getAuthToken.mockReset().mockResolvedValue({ token: "token" });
     removeCachedAuthToken.mockReset().mockResolvedValue(undefined);
     clearAllCachedAuthTokens.mockReset().mockResolvedValue(undefined);
-    vi.stubGlobal("chrome", { identity: { getAuthToken, removeCachedAuthToken, clearAllCachedAuthTokens } });
+    vi.stubGlobal("chrome", {
+      identity: { getAuthToken, removeCachedAuthToken, clearAllCachedAuthTokens },
+      runtime: { getManifest }
+    });
+  });
+
+  it("rejects placeholder OAuth clients before opening Google", async () => {
+    expect(isValidGoogleOAuthClientId("123456789012-real-client.apps.googleusercontent.com")).toBe(true);
+    expect(isValidGoogleOAuthClientId("REPLACE_WITH_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com")).toBe(false);
+    getManifest.mockReturnValueOnce({
+      oauth2: { client_id: "REPLACE_WITH_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com" }
+    });
+    await expect(new GoogleCalendarAdapter().ensureConnected(true)).rejects.toMatchObject({
+      code: "GOOGLE_AUTH_REQUIRED",
+      status: 401
+    });
+    expect(getAuthToken).not.toHaveBeenCalled();
   });
 
   it("reuses a valid dedicated calendar", async () => {
@@ -106,6 +125,29 @@ describe("GoogleCalendarAdapter", () => {
     expect(fetchCall(fetchMock, 1)[1].method).toBe("PUT");
   });
 
+  it("paces independent calendar writes", async () => {
+    vi.useFakeTimers();
+    try {
+      const writeTimes: number[] = [];
+      vi.stubGlobal("fetch", vi.fn(async () => {
+        writeTimes.push(Date.now());
+        return response(200, {});
+      }));
+
+      const pending = new GoogleCalendarAdapter().apply("calendar", Array.from({ length: 4 }, (_, index) => ({
+        kind: "insert" as const,
+        event: { ...event, id: `stable-${index}`, sourceId: `absid:${index}` }
+      })));
+      await vi.runAllTimersAsync();
+      await pending;
+
+      expect(writeTimes).toHaveLength(4);
+      expect(writeTimes[1]! - writeTimes[0]!).toBeGreaterThanOrEqual(150);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("invalidates rejected OAuth tokens and returns a bounded API error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response(401, "x".repeat(800))));
     await expect(new GoogleCalendarAdapter().ensureConnected(false, "calendar")).rejects.toMatchObject({
@@ -119,8 +161,26 @@ describe("GoogleCalendarAdapter", () => {
     }
   });
 
+  it("backs off and retries a temporary Calendar rate limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(response(403, { error: { errors: [{ reason: "rateLimitExceeded" }] } }))
+        .mockResolvedValueOnce(response(200, { id: "existing" }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const pending = new GoogleCalendarAdapter().ensureConnected(false, "existing");
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toEqual({ calendarId: "existing", calendarName: "Lectio" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("requires Chrome identity and can disconnect", async () => {
-    vi.stubGlobal("chrome", { identity: { clearAllCachedAuthTokens } });
+    vi.stubGlobal("chrome", { identity: { clearAllCachedAuthTokens }, runtime: { getManifest } });
     await expect(new GoogleCalendarAdapter().ensureConnected(false)).rejects.toMatchObject({ status: 401 });
     await new GoogleCalendarAdapter().disconnect();
     expect(clearAllCachedAuthTokens).toHaveBeenCalled();
@@ -129,5 +189,17 @@ describe("GoogleCalendarAdapter", () => {
   it("rejects a missing token", async () => {
     getAuthToken.mockResolvedValueOnce({});
     await expect(new GoogleCalendarAdapter().ensureConnected(false)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("accepts Brave's legacy string token result", async () => {
+    getAuthToken.mockResolvedValueOnce("brave-token");
+    const fetchMock = vi.fn(async () => response(200, { id: "brave-calendar" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new GoogleCalendarAdapter().ensureConnected(true)).resolves.toEqual({
+      calendarId: "brave-calendar",
+      calendarName: "Lectio"
+    });
+    expect(fetchCall(fetchMock, 0)[1].headers).toMatchObject({ Authorization: "Bearer brave-token" });
   });
 });

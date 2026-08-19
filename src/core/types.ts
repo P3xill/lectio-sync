@@ -17,7 +17,7 @@ export interface LectioAccount {
 }
 
 export interface SyncSettings {
-  intervalMinutes: 5 | 10;
+  intervalMinutes: number;
   horizonWeeks: number;
   cancellationMode: CancellationMode;
   includeHomework: boolean;
@@ -53,6 +53,7 @@ export interface SafeError {
   message: string;
   occurredAt: string;
   technicalDetail?: string;
+  calendarMayHaveChanged?: boolean;
 }
 
 export interface LectioEvent {

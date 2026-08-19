@@ -1,4 +1,10 @@
 const COPENHAGEN_TIME_ZONE = "Europe/Copenhagen";
+const COPENHAGEN_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: COPENHAGEN_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
 
 export interface IsoWeek {
   week: number;
@@ -7,12 +13,14 @@ export interface IsoWeek {
 }
 
 export function getIsoWeek(date: Date): IsoWeek {
-  const utc = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const parts = COPENHAGEN_DATE_FORMATTER.formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const utc = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
   const day = utc.getUTCDay() || 7;
   utc.setUTCDate(utc.getUTCDate() + 4 - day);
   const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
   const week = Math.ceil(((utc.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const monday = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
   const originalDay = monday.getUTCDay() || 7;
   monday.setUTCDate(monday.getUTCDate() - originalDay + 1);
   return { week, year: utc.getUTCFullYear(), monday };
@@ -29,7 +37,7 @@ export function lectioWeekValue(date: Date): string {
 
 export function getFetchWeekOffsets(initialSync: boolean, horizonWeeks: number, rotationCursor: number): number[] {
   if (initialSync) {
-    return Array.from({ length: horizonWeeks + 1 }, (_, index) => index);
+    return [0, 1, 2].filter((offset) => offset <= horizonWeeks);
   }
 
   const near = [0, 1, 2];

@@ -3,6 +3,9 @@ import type { LectioEvent } from "./types";
 
 type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
+const MAX_SCHEDULE_EVENTS = 500;
+const MAX_DOCUMENT_NODES = 50_000;
+const MAX_DOCUMENT_DEPTH = 200;
 
 export class LectioParserError extends Error {
   constructor(
@@ -31,6 +34,21 @@ function isElement(node: Node): node is Element {
 
 function children(node: Node): Node[] {
   return "childNodes" in node ? (node.childNodes as Node[]) : [];
+}
+
+function validateDocumentComplexity(document: Node): void {
+  const pending: Array<{ node: Node; depth: number }> = [{ node: document, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    visited += 1;
+    if (visited > MAX_DOCUMENT_NODES || current.depth > MAX_DOCUMENT_DEPTH) {
+      throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned a page that was too complex.");
+    }
+    for (const child of children(current.node)) {
+      pending.push({ node: child, depth: current.depth + 1 });
+    }
+  }
 }
 
 function getAttr(node: Element, name: string): string | undefined {
@@ -155,6 +173,21 @@ function compositeActivityFields(document: Node): { title?: string; note?: strin
   return { title, note, found: true };
 }
 
+function isRecognizedLectioActivityPage(document: Node, finalUrl: string): boolean {
+  try {
+    const url = new URL(finalUrl);
+    const trustedPath = /^\/lectio\/\d+\/aktivitet\/(?:aktivitetforside2|aktivitetinfo2)\.aspx$/i.test(url.pathname);
+    if (url.protocol !== "https:" || url.hostname !== "www.lectio.dk" || !trustedPath) return false;
+
+    return Boolean(findFirst(document, (element) =>
+      getAttr(element, "id") === "NiceFeaturesForAktivitetDialog"
+      || hasClass(element, "prepend-fonticon-activity")
+    ));
+  } catch {
+    return false;
+  }
+}
+
 function valueAfterLabel(lines: string[], pattern: RegExp): string | undefined {
   const line = lines.find((candidate) => pattern.test(candidate));
   return line?.split(":", 2)[1]?.trim() || undefined;
@@ -188,18 +221,43 @@ function parseSourceId(href: string | undefined): string | undefined {
     if (url.protocol !== "https:" || url.hostname !== "www.lectio.dk") return undefined;
     for (const key of ["absid", "aftaleid", "ProeveholdId", "proeveholdid", "aktivitetid"]) {
       const value = url.searchParams.get(key);
-      if (value) return `${key.toLowerCase()}:${value}`;
+      if (value && /^\d{1,32}$/.test(value)) return `${key.toLowerCase()}:${value}`;
     }
-    return url.pathname && url.search ? `${url.pathname}${url.search}` : undefined;
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+function isValidGregorianDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || year < 1 || year > 9_999 || month < 1 || month > 12 || day < 1) return false;
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+  return day <= daysInMonth;
+}
+
+function isValidTime(hour: number, minute: number): boolean {
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23
+    && Number.isInteger(minute) && minute >= 0 && minute <= 59;
 }
 
 function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; end: string } | undefined {
   const explicit = tooltip.match(/(\d{1,2})\/(\d{1,2})-(\d{4})\s+(\d{1,2}):(\d{2})\s+til\s+(\d{1,2}):(\d{2})/i);
   if (explicit) {
     const [, day, month, year, startHour, startMinute, endHour, endMinute] = explicit;
+    const numericDay = Number(day);
+    const numericMonth = Number(month);
+    const numericYear = Number(year);
+    const numericStartHour = Number(startHour);
+    const numericStartMinute = Number(startMinute);
+    const numericEndHour = Number(endHour);
+    const numericEndMinute = Number(endMinute);
+    if (
+      !isValidGregorianDate(numericYear, numericMonth, numericDay)
+      || !isValidTime(numericStartHour, numericStartMinute)
+      || !isValidTime(numericEndHour, numericEndMinute)
+      || numericEndHour * 60 + numericEndMinute <= numericStartHour * 60 + numericStartMinute
+    ) return undefined;
     return {
       start: `${year}-${month?.padStart(2, "0")}-${day?.padStart(2, "0")}T${startHour?.padStart(2, "0")}:${startMinute}:00`,
       end: `${year}-${month?.padStart(2, "0")}-${day?.padStart(2, "0")}T${endHour?.padStart(2, "0")}:${endMinute}:00`
@@ -209,6 +267,17 @@ function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; 
   const timeOnly = tooltip.match(/(?:^|\s)(\d{1,2}):(\d{2})\s+til\s+(\d{1,2}):(\d{2})/i);
   if (timeOnly && fallbackDay && /^\d{4}-\d{2}-\d{2}$/.test(fallbackDay)) {
     const [, startHour, startMinute, endHour, endMinute] = timeOnly;
+    const [year, month, day] = fallbackDay.split("-").map(Number);
+    const numericStartHour = Number(startHour);
+    const numericStartMinute = Number(startMinute);
+    const numericEndHour = Number(endHour);
+    const numericEndMinute = Number(endMinute);
+    if (
+      !isValidGregorianDate(year!, month!, day!)
+      || !isValidTime(numericStartHour, numericStartMinute)
+      || !isValidTime(numericEndHour, numericEndMinute)
+      || numericEndHour * 60 + numericEndMinute <= numericStartHour * 60 + numericStartMinute
+    ) return undefined;
     return {
       start: `${fallbackDay}T${startHour?.padStart(2, "0")}:${startMinute}:00`,
       end: `${fallbackDay}T${endHour?.padStart(2, "0")}:${endMinute}:00`
@@ -219,23 +288,24 @@ function parseDateTime(tooltip: string, fallbackDay?: string): { start: string; 
 
 function eventTitle(node: Element, lines: string[]): string {
   const explicitTitle = valueAfterLabel(lines, /^(?:Aktivitets)?Titel\s*:/i);
-  if (explicitTitle) return explicitTitle;
+  if (explicitTitle) return boundedText(explicitTitle, 300) ?? "Lectio module";
   const tooltipTitle = titleBeforeDate(lines);
   if (tooltipTitle) return tooltipTitle;
   const content = findFirst(node, (element) => hasClass(element, "s2skemabrikcontent"));
   const fromContent = content ? cleanText(textContent(content)) : "";
-  if (fromContent) return fromContent.split("\n").at(-1)?.trim() || "Lectio module";
+  if (fromContent) return boundedText(fromContent.split("\n").at(-1), 300) ?? "Lectio module";
 
   const hold = valueAfterLabel(lines, /^Hold\s*:/i);
-  if (hold) return hold;
+  if (hold) return boundedText(hold, 300) ?? "Lectio module";
 
   const titleLine = lines.find((line) =>
     !/^(Aflyst!|Ændret!|\d{1,2}\/\d{1,2}-\d{4}|Hold\s*:|Lærer.*:|Lokale.*:|Lektier\s*:)/i.test(line)
   );
-  return titleLine || "Lectio module";
+  return boundedText(titleLine, 300) ?? "Lectio module";
 }
 
 function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefined {
+  if (!ancestors.some((ancestor) => ancestor.tagName === "table" && hasClass(ancestor, "s2skema"))) return undefined;
   const tooltip = cleanText(getAttr(node, "data-tooltip") ?? getAttr(node, "data-additionalinfo") ?? "");
   const lines = tooltip.split("\n").map((line) => line.trim()).filter(Boolean);
   const dayCell = [...ancestors].reverse().find((ancestor) => ancestor.tagName === "td" && getAttr(ancestor, "data-date"));
@@ -266,9 +336,9 @@ function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefine
     note,
     start: dateTime.start,
     end: dateTime.end,
-    className: valueAfterLabel(lines, /^Hold\s*:/i),
-    location: valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i),
-    teacher: valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i),
+    className: boundedText(valueAfterLabel(lines, /^Hold\s*:/i), 300),
+    location: boundedText(valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i), 300),
+    teacher: boundedText(valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i), 300),
     homework,
     status,
     sourceUrl: href ? new URL(href, "https://www.lectio.dk").toString() : undefined
@@ -287,7 +357,9 @@ export function parseLectioActivityDetails(
   }
 
   const document = parse(html) as Node;
+  validateDocumentComplexity(document);
   const composite = compositeActivityFields(document);
+  const recognizedActivityPage = isRecognizedLectioActivityPage(document, finalUrl);
   const title = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*(?:s)?titel|activity[-_ ]*title/i)
     ?? valueBesideLabel(document, /^(?:Aktivitets)?titel\s*:?$/i)
     ?? composite.title;
@@ -295,7 +367,8 @@ export function parseLectioActivityDetails(
     ?? valueBesideLabel(document, /^(?:Aktivitets)?note\s*:?$/i)
     ?? composite.note;
   const bodyText = cleanText(textContent(document));
-  const structuralMarkers = Number(composite.found)
+  const structuralMarkers = Number(recognizedActivityPage)
+    + Number(composite.found)
     + Number(Boolean(title || note))
     + Number(/\bLektier\b/i.test(bodyText) && /\bmodul\b/i.test(bodyText));
 
@@ -318,22 +391,46 @@ export function parseLectioSchedule(html: string, finalUrl = "https://www.lectio
   }
 
   const document = parse(html) as Node;
+  validateDocumentComplexity(document);
   const events: LectioEvent[] = [];
   let structuralMarkers = 0;
+  let scheduleTables = 0;
+  let datedCells = 0;
+  let eventCandidates = 0;
+  let malformedCandidates = 0;
 
   walk(document, (node, ancestors) => {
     if (!isElement(node)) return;
-    if ((node.tagName === "table" && hasClass(node, "s2skema")) || getAttr(node, "data-date")) {
+    if (node.tagName === "table" && hasClass(node, "s2skema")) {
+      scheduleTables += 1;
       structuralMarkers += 1;
     }
-    if (node.tagName === "a" && (hasClass(node, "s2skemabrik") || hasClass(node, "s2bgbox"))) {
+    if (node.tagName === "td" && getAttr(node, "data-date")) {
+      datedCells += 1;
+      structuralMarkers += 1;
+    }
+    const isDatedScheduleBrick = node.tagName === "a"
+      && (hasClass(node, "s2skemabrik") || hasClass(node, "s2bgbox"))
+      && ancestors.some((ancestor) => ancestor.tagName === "td" && Boolean(getAttr(ancestor, "data-date")));
+    if (isDatedScheduleBrick) {
+      eventCandidates += 1;
       const event = parseBrick(node, ancestors);
-      if (event) events.push(event);
+      if (event) {
+        events.push(event);
+        if (events.length > MAX_SCHEDULE_EVENTS) {
+          throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned too many schedule events.");
+        }
+      } else {
+        malformedCandidates += 1;
+      }
     }
   });
 
-  if (structuralMarkers === 0) {
+  if (scheduleTables === 0 || datedCells === 0) {
     throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned a page without schedule markers.");
+  }
+  if (eventCandidates > 0 && malformedCandidates > 0) {
+    throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned malformed schedule events.");
   }
 
   const deduplicated = new Map(events.map((event) => [event.sourceId, event]));

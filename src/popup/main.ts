@@ -1,5 +1,6 @@
 import type browser from "webextension-polyfill";
 import { formatDisplayDateTime, formatDisplayTime } from "../core/date";
+import { MAX_CHECK_INTERVAL_MINUTES, MIN_CHECK_INTERVAL_MINUTES } from "../core/settings";
 import { DEFAULT_STATE, type ExtensionState, type RuntimeMessage, type RuntimeResponse } from "../core/types";
 import "./styles.css";
 
@@ -13,11 +14,18 @@ let state: ExtensionState = DEFAULT_STATE;
 let view: View = "main";
 let busy = false;
 let transientMessage = "";
+let transientIsError = false;
 let browserApi: typeof browser | undefined;
 
 const isSafari = __TARGET_BROWSER__ === "safari";
 const calendarStatusLabel = isSafari ? "Apple Calendar" : "Google Calendar";
 const connectCalendarLabel = isSafari ? "Connect Apple Calendar" : "Connect Google Calendar";
+const settingsMenuFocusSelector = '[data-focus-key="settings-menu"]';
+const settingsActionFocusSelector = '[data-focus-key="settings-action"]';
+const detailsActionFocusSelector = '[data-focus-key="view-details"]';
+
+let pendingFocusSelector: string | undefined;
+let backFocusSelector = settingsMenuFocusSelector;
 
 function isPreview(): boolean {
   return location.protocol === "http:" || location.protocol === "https:";
@@ -40,6 +48,14 @@ function previewState(): ExtensionState {
   if (preview === "error") {
     return { ...DEFAULT_STATE, ...connected, status: "safe_error", lastError: { code: "LECTIO_UNEXPECTED_PAGE", message: "Lectio returned an unexpected page.", occurredAt: now.toISOString(), technicalDetail: "Schedule markers were not found. Calendar writes were skipped." } };
   }
+  if (preview === "google-disconnected") {
+    return {
+      ...DEFAULT_STATE,
+      lectioAccount: connected.lectioAccount,
+      status: "google_disconnected",
+      lastError: { code: "GOOGLE_AUTH_REQUIRED", message: "Google Calendar access needs to be reconnected.", occurredAt: now.toISOString() }
+    };
+  }
   if (preview === "settings") {
     view = "settings";
     return { ...DEFAULT_STATE, ...connected, status: "healthy", lastSuccessAt: now.toISOString() };
@@ -51,12 +67,13 @@ async function send<T = unknown>(message: RuntimeMessage): Promise<T> {
   if (isPreview()) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     if (message.type === "GET_STATE") return previewState() as T;
+    if (message.type === "START_LECTIO_SETUP") return state as T;
     if (message.type === "UPDATE_SETTINGS") {
       state = { ...state, settings: { ...state.settings, ...message.settings } };
       return state as T;
     }
     if (message.type === "CONNECT_GOOGLE") {
-      state = { ...state, googleCalendarId: "preview-calendar", googleCalendarName: "Lectio", status: "ready" };
+      state = { ...state, googleCalendarId: "preview-calendar", googleCalendarName: "Lectio", status: "ready", lastError: undefined };
       return state as T;
     }
     return undefined as T;
@@ -103,12 +120,41 @@ function icon(kind: "calendar" | "check" | "warning" | "lock" | "clock" | "arrow
   return svg;
 }
 
+function setView(nextView: View, focusSelector = "h1"): void {
+  view = nextView;
+  pendingFocusSelector = focusSelector;
+  transientMessage = "";
+  transientIsError = false;
+}
+
+function openSubView(nextView: Exclude<View, "main">, returnFocusSelector: string): void {
+  backFocusSelector = returnFocusSelector;
+  setView(nextView);
+}
+
+function focusPendingTarget(): void {
+  const selector = pendingFocusSelector;
+  pendingFocusSelector = undefined;
+  if (!selector) return;
+  const target = root.querySelector<HTMLElement>(selector);
+  if (!target) return;
+  if (target instanceof HTMLHeadingElement) target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+
 function header(title = "Lectio Sync", back = false): HTMLElement {
   const left = node("div", { className: "brand" }, icon("calendar"), node("span", { text: title }));
   const action = back
-    ? actionButton("Back", "quiet icon-button", () => { view = "main"; render(); }, "←")
-    : node("button", { className: "menu-button", attrs: { type: "button", "aria-label": "Open settings" } }, icon("settings"));
-  if (!back) action.addEventListener("click", () => { view = "settings"; render(); });
+    ? node("button", {
+      className: "button quiet icon-button",
+      attrs: { type: "button", "aria-label": "Back" }
+    }, node("span", { text: "←", attrs: { "aria-hidden": "true" } }))
+    : node("button", { className: "menu-button", attrs: { type: "button", "aria-label": "Open settings", "data-focus-key": "settings-menu" } }, icon("settings"));
+  action.addEventListener("click", () => {
+    if (back) setView("main", backFocusSelector);
+    else openSubView("settings", settingsMenuFocusSelector);
+    render();
+  });
   return node("header", { className: "app-header" }, left, action);
 }
 
@@ -125,11 +171,13 @@ async function perform(handler: () => void | Promise<void>): Promise<void> {
   if (busy) return;
   busy = true;
   transientMessage = "";
+  transientIsError = false;
   render();
   try {
     await handler();
   } catch (error) {
     transientMessage = typeof error === "object" && error && "message" in error ? String(error.message) : "That action could not be completed.";
+    transientIsError = true;
   } finally {
     busy = false;
     render();
@@ -184,8 +232,11 @@ function setupView(): HTMLElement {
   let button: HTMLButtonElement;
   if (!lectioConnected) {
     button = actionButton("Start setup", "primary full", async () => {
-      await send({ type: "START_LECTIO_SETUP" });
-      transientMessage = "After signing in, return here to continue.";
+      state = await send<ExtensionState>({ type: "START_LECTIO_SETUP" });
+      transientMessage = state.lectioAccount
+        ? "Lectio sign-in detected."
+        : "If you are already signed in, reload the Lectio tab and try again.";
+      transientIsError = false;
     });
   } else if (!googleConnected) {
     button = actionButton(connectCalendarLabel, "primary full", async () => {
@@ -193,12 +244,15 @@ function setupView(): HTMLElement {
     });
   } else {
     button = actionButton("Run first sync", "primary full", async () => {
-      await send({ type: "SYNC_NOW" });
-      state = await send<ExtensionState>({ type: "GET_STATE" });
+      try {
+        await send({ type: "SYNC_NOW" });
+      } finally {
+        state = await send<ExtensionState>({ type: "GET_STATE" });
+      }
     });
   }
 
-  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, node("div", { className: "setup-footer" }, privacy, button, transient())));
+  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, node("div", { className: "setup-footer" }, privacy, transient(), button)));
 }
 
 function setupStep(number: string, title: string, complete: boolean, detail: string): HTMLElement {
@@ -211,12 +265,19 @@ function setupStep(number: string, title: string, complete: boolean, detail: str
 function healthyView(): HTMLElement {
   const syncing = state.status === "syncing" || busy;
   const mark = node("div", { className: "hero-icon success" }, icon("check"));
+  const settingsAction = actionButton("Settings", "secondary", () => {
+    openSubView("settings", settingsActionFocusSelector);
+  });
+  settingsAction.setAttribute("data-focus-key", "settings-action");
   const actions = node("div", { className: "button-row" },
     actionButton(syncing ? "Syncing…" : "Sync now", "primary", async () => {
-      await send({ type: "SYNC_NOW" });
-      state = await send<ExtensionState>({ type: "GET_STATE" });
+      try {
+        await send({ type: "SYNC_NOW" });
+      } finally {
+        state = await send<ExtensionState>({ type: "GET_STATE" });
+      }
     }),
-    actionButton("Settings", "secondary", () => { view = "settings"; render(); })
+    settingsAction
   );
   return node("div", { className: "popup-shell" }, header(), node("main", { className: "content status-content" },
     mark,
@@ -233,12 +294,24 @@ function healthyView(): HTMLElement {
 }
 
 function recoveryView(expired: boolean): HTMLElement {
+  const googleDisconnected = state.status === "google_disconnected";
   const title = expired ? "Lectio login expired" : "Sync paused safely";
   const text = expired
     ? "Open Lectio and sign in again with MitID. We never see your MitID details."
-    : "Your calendar was not changed.";
+    : state.lastError?.calendarMayHaveChanged
+      ? "A calendar update was interrupted. The next sync will safely reconcile any partial changes."
+      : "Your calendar was not changed.";
   const detail = expired ? undefined : state.lastError?.message ?? "Lectio returned an unexpected page.";
-  const primary = expired ? "Open Lectio" : "Try again";
+  const primary = expired ? "Open Lectio" : googleDisconnected ? `Reconnect ${calendarStatusLabel}` : "Try again";
+  const secondaryAction = actionButton(expired ? "Check again" : "View details", "secondary full", async () => {
+    if (expired) {
+      await send({ type: "CHECK_LECTIO" });
+      state = await send<ExtensionState>({ type: "GET_STATE" });
+    } else {
+      openSubView("details", detailsActionFocusSelector);
+    }
+  });
+  if (!expired) secondaryAction.setAttribute("data-focus-key", "view-details");
   return node("div", { className: "popup-shell" }, header(), node("main", { className: "content recovery-content" },
     node("div", { className: "hero-icon warning" }, icon("warning")),
     node("h1", { text: title }),
@@ -247,15 +320,16 @@ function recoveryView(expired: boolean): HTMLElement {
     node("div", { className: "recovery-actions" },
       actionButton(primary, "primary full", async () => {
         if (expired) await send({ type: "START_LECTIO_SETUP" });
-        else await send({ type: "SYNC_NOW" });
-      }),
-      actionButton(expired ? "Check again" : "View details", "secondary full", async () => {
-        if (expired) {
-          state = await send<ExtensionState>({ type: "GET_STATE" });
-        } else {
-          view = "details";
+        else if (googleDisconnected) state = await send<ExtensionState>({ type: "CONNECT_GOOGLE" });
+        else {
+          try {
+            await send({ type: "SYNC_NOW" });
+          } finally {
+            state = await send<ExtensionState>({ type: "GET_STATE" });
+          }
         }
-      })
+      }),
+      secondaryAction
     ),
     transient()
   ));
@@ -263,7 +337,14 @@ function recoveryView(expired: boolean): HTMLElement {
 
 function settingsView(): HTMLElement {
   const form = node("form", { className: "settings-form" });
-  const interval = selectField("Check interval", "interval", ["5 minutes", "10 minutes"], state.settings.intervalMinutes === 5 ? "5 minutes" : "10 minutes");
+  const interval = numberField(
+    "Check interval (minutes)",
+    "interval",
+    state.settings.intervalMinutes,
+    MIN_CHECK_INTERVAL_MINUTES,
+    MAX_CHECK_INTERVAL_MINUTES,
+    "Choose any whole number from 5 minutes to 24 hours."
+  );
   const cancellations = selectField("Cancelled modules", "cancellations", ["Mark as cancelled", "Remove after confirmation"], state.settings.cancellationMode === "mark" ? "Mark as cancelled" : "Remove after confirmation");
   const title = toggleField("Include title", "Lesson titles are used as event names; otherwise the class is used.", state.settings.includeTitle);
   const description = toggleField("Include description", "Lesson descriptions are copied to event notes.", state.settings.includeDescription);
@@ -271,11 +352,15 @@ function settingsView(): HTMLElement {
   const teacher = toggleField("Include teacher", "Teacher names are copied to event notes.", state.settings.includeTeacher);
   const homework = toggleField("Include homework", "Off by default for data minimization.", state.settings.includeHomework);
   form.append(interval.wrapper, cancellations.wrapper, title.wrapper, description.wrapper, className.wrapper, teacher.wrapper, homework.wrapper);
-  const save = actionButton("Save settings", "primary full", async () => {
-    state = await send<ExtensionState>({
+  const save = node("button", { className: "button primary full", attrs: { type: "button" } }, node("span", { text: "Save settings" }));
+  save.disabled = busy;
+  save.addEventListener("click", () => {
+    if (!form.reportValidity()) return;
+    void perform(async () => {
+      state = await send<ExtensionState>({
         type: "UPDATE_SETTINGS",
         settings: {
-          intervalMinutes: interval.select.value.startsWith("5") ? 5 : 10,
+          intervalMinutes: Number(interval.input.value),
           cancellationMode: cancellations.select.value.startsWith("Mark") ? "mark" : "remove",
           includeTitle: title.input.checked,
           includeDescription: description.input.checked,
@@ -284,7 +369,8 @@ function settingsView(): HTMLElement {
           includeHomework: homework.input.checked
         }
       });
-    view = "main";
+      setView("main");
+    });
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -306,6 +392,28 @@ function selectField(label: string, name: string, options: string[], selected: s
   return { select, wrapper: node("label", { className: "field", attrs: { for: name } }, node("span", { text: label }), select) };
 }
 
+function numberField(label: string, name: string, value: number, min: number, max: number, detail: string) {
+  const input = node("input", { attrs: {
+    type: "number",
+    inputmode: "numeric",
+    name,
+    id: name,
+    min: String(min),
+    max: String(max),
+    step: "1",
+    required: "",
+    value: String(value)
+  } });
+  return {
+    input,
+    wrapper: node("label", { className: "field", attrs: { for: name } },
+      node("span", { text: label }),
+      input,
+      node("small", { text: detail })
+    )
+  };
+}
+
 function toggleField(label: string, detail: string, checked: boolean) {
   const input = node("input", { attrs: { type: "checkbox", ...(checked ? { checked: "" } : {}) } });
   const copy = node("span", { className: "toggle-copy" }, node("strong", { text: label }), node("small", { text: detail }));
@@ -314,25 +422,37 @@ function toggleField(label: string, detail: string, checked: boolean) {
 
 function detailsView(): HTMLElement {
   const error = state.lastError;
+  const mayHaveChanged = Boolean(error?.calendarMayHaveChanged);
   return node("div", { className: "popup-shell" }, header("Error details", true), node("main", { className: "content settings-content" },
-    node("h1", { text: "Nothing was changed" }),
-    node("p", { className: "lead", text: "Lectio Sync stopped before writing to your calendar." }),
+    node("h1", { text: mayHaveChanged ? "Update interrupted" : "Nothing was changed" }),
+    node("p", { className: "lead", text: mayHaveChanged
+      ? "Some changes may have been applied. Try again to reconcile the dedicated Lectio calendar."
+      : "Lectio Sync stopped before writing to your calendar." }),
     node("dl", { className: "detail-list" },
       node("dt", { text: "Error" }), node("dd", { text: error?.code ?? "UNKNOWN" }),
       node("dt", { text: "When" }), node("dd", { text: error ? formatDisplayDateTime(new Date(error.occurredAt)) : "Unknown" }),
       node("dt", { text: "Technical detail" }), node("dd", { text: error?.technicalDetail ?? error?.message ?? "No details available." })
     ),
     actionButton("Try again", "primary full", async () => {
-      await send({ type: "SYNC_NOW" });
-      state = await send<ExtensionState>({ type: "GET_STATE" });
-      view = "main";
+      try {
+        await send({ type: "SYNC_NOW" });
+      } finally {
+        state = await send<ExtensionState>({ type: "GET_STATE" });
+        setView("main");
+      }
     }),
     transient()
   ));
 }
 
 function transient(): HTMLElement | undefined {
-  return transientMessage ? node("p", { className: "transient", text: transientMessage, attrs: { role: "status" } }) : undefined;
+  return transientMessage
+    ? node("p", {
+      className: `transient ${transientIsError ? "error" : ""}`,
+      text: transientMessage,
+      attrs: { role: transientIsError ? "alert" : "status" }
+    })
+    : undefined;
 }
 
 function render(): void {
@@ -343,6 +463,7 @@ function render(): void {
   else if (state.status === "safe_error" || state.status === "google_disconnected") root.append(recoveryView(false));
   else if (state.lectioAccount && state.googleCalendarId && ["healthy", "ready", "syncing"].includes(state.status)) root.append(healthyView());
   else root.append(setupView());
+  focusPendingTarget();
 }
 
 async function initialize(): Promise<void> {

@@ -6,7 +6,7 @@ This guide separates reproducible repository work from steps that require the ma
 
 | Target | Browsers | Calendar authentication |
 | --- | --- | --- |
-| Chrome package | Google Chrome and Brave | Chrome Identity API; Brave may require its Google-login-for-extensions setting |
+| Chrome package | Google Chrome and Brave | Chrome Identity API in Chrome; browser-managed Web OAuth callback in Brave |
 | Firefox package | Mozilla Firefox | Google Desktop OAuth client with PKCE and Firefox's loopback callback |
 | Safari app | Safari on macOS | Apple EventKit and the Google account configured in macOS |
 
@@ -16,25 +16,31 @@ Edge, Opera, and Vivaldi can often load Chromium extension code, but Lectio Sync
 
 1. Create a public GitHub repository and push the source without `dist`, `artifacts`, `.build`, `.env`, signing files, or credentials.
 2. Enable GitHub private vulnerability reporting and branch protection for `main`.
-3. Publish a project homepage containing the product description and links to `PRIVACY.md`, `SECURITY.md`, and the license.
+3. Use the published project homepage at `https://lectio-sync.johannespeulicke.chatgpt.site`, with privacy and support pages at `/privacy` and `/support`.
 4. Create a Google Cloud project, enable the Google Calendar API, configure the OAuth consent screen, and use the narrow `calendar.app.created` scope.
-5. Create a Chrome Extension OAuth client after the Chrome Web Store assigns the extension ID.
-6. Create a Desktop OAuth client for Firefox. Do not bundle a client secret; the Firefox flow uses PKCE and treats the extension as a public installed client.
-7. Complete Google's production OAuth verification if Google requires it for the selected scope and audience.
+5. After the Chrome Web Store assigns the extension ID, create a Chrome Extension OAuth client bound to that exact ID.
+6. Create a Web application OAuth client for Brave whose only authorized redirect URI is `https://EXTENSION_ID.chromiumapp.org/`.
+7. Create a Desktop OAuth client for Firefox. Its issued client credential is required by Google's token endpoint and is bundled as a non-confidential installed-app credential; PKCE protects the authorization-code exchange.
+8. Complete Google's production OAuth verification if Google requires it for the selected scope and audience.
 
 ## Build release artifacts
 
-Use a clean checkout and Node.js 20 or later:
+Use a clean checkout and Node.js 20.12 or later:
 
 ```sh
 npm ci
 npm audit --omit=dev
 npm run verify
-GOOGLE_OAUTH_CLIENT_ID="chrome-client.apps.googleusercontent.com" npm run package:chrome
-GOOGLE_FIREFOX_OAUTH_CLIENT_ID="desktop-client.apps.googleusercontent.com" npm run package:firefox
+GOOGLE_OAUTH_CLIENT_ID="chrome-client.apps.googleusercontent.com" \
+GOOGLE_BRAVE_OAUTH_CLIENT_ID="brave-web-client.apps.googleusercontent.com" \
+npm run package:chrome
+GOOGLE_FIREFOX_OAUTH_CLIENT_ID="desktop-client.apps.googleusercontent.com" \
+GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET=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tial \
+npm run package:firefox
+npm run package:firefox-source
 ```
 
-This produces `artifacts/lectio-sync-chrome.zip` and `artifacts/lectio-sync-firefox.zip`. Source maps, SVG source artwork, credentials, and platform signing files are excluded from release ZIPs.
+This produces `artifacts/lectio-sync-chrome.zip`, `artifacts/lectio-sync-firefox.zip`, and the AMO reviewer archive `artifacts/lectio-sync-firefox-source.zip`. Source maps, SVG source artwork, private credentials, and platform signing files are excluded from release ZIPs. Firefox contains Google's non-confidential installed-app client credential as required for token exchange. Reviewer instructions are in `docs/FIREFOX_REVIEWER.md`.
 
 For Safari:
 
@@ -54,7 +60,7 @@ Select the maintainer's Apple team, use a stable bundle identifier, create an Ar
 - Use the single-purpose description in `docs/STORE_LISTING.md`.
 - Disclose access to Lectio pages, Google Calendar API, notifications, and local extension storage.
 - Link the public privacy policy and project homepage.
-- After the item ID exists, confirm the OAuth client is bound to that exact ID and rebuild the final ZIP.
+- After the item ID exists, confirm the Chrome Extension OAuth client is bound to that exact ID and the Brave Web client has the exact `https://EXTENSION_ID.chromiumapp.org/` redirect URI, then rebuild the final ZIP with both client IDs.
 
 ### Firefox Add-ons
 
