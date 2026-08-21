@@ -326,22 +326,40 @@ export async function connectCalendar(interactive = true): Promise<ExtensionStat
 }
 
 async function performSync(): Promise<SyncSummary> {
-  const state = await getState();
+  let state = await getState();
   if (!state.lectioAccount) throw makeSafeError("LECTIO_AUTH_REQUIRED", "Connect Lectio first.");
   if (!state.googleCalendarId) throw makeSafeError("GOOGLE_AUTH_REQUIRED", "Connect Google Calendar first.");
-  const identity = syncIdentity(state)!;
+  const lectioAccount = state.lectioAccount;
+  let activeCalendarId = state.googleCalendarId;
+  let identity = syncIdentity(state)!;
   let calendarMutationStarted = false;
 
   try {
     await patchState({ status: "syncing", lastAttemptAt: new Date().toISOString(), lastError: undefined });
+    const adapter = calendarAdapter();
+    const connected = await adapter.ensureConnected(false, activeCalendarId);
+    if (connected.calendarId !== activeCalendarId) {
+      await assertSyncIdentity(identity, false);
+      await patchState({
+        googleCalendarId: connected.calendarId,
+        googleCalendarName: connected.calendarName
+      });
+      state = {
+        ...state,
+        googleCalendarId: connected.calendarId,
+        googleCalendarName: connected.calendarName
+      };
+      activeCalendarId = connected.calendarId;
+      identity = syncIdentity(state)!;
+    }
     const baseMonday = getIsoWeek(new Date()).monday;
     const initialSync = !state.lastSuccessAt;
     const offsets = getFetchWeekOffsets(initialSync, state.settings.horizonWeeks, state.rotationCursor);
     const desiredSource: LectioEvent[] = [];
     for (const offset of offsets) {
       desiredSource.push(...await fetchScheduleWeek(
-        state.lectioAccount.schoolId,
-        state.lectioAccount.studentId,
+        lectioAccount.schoolId,
+        lectioAccount.studentId,
         addWeeks(baseMonday, offset)
       ));
     }
@@ -350,10 +368,10 @@ async function performSync(): Promise<SyncSummary> {
     if (uniqueDesiredSource.length > MAX_EVENTS_PER_SYNC) {
       throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned too many events in one synchronization.");
     }
-    const enrichedSource = await enrichActivityDetails(uniqueDesiredSource, state.lectioAccount.schoolId);
+    const enrichedSource = await enrichActivityDetails(uniqueDesiredSource, lectioAccount.schoolId);
     const calendarSource: CalendarEventInput[] = [];
     for (const event of enrichedSource) {
-      calendarSource.push(await toCalendarEvent(event, state.lectioAccount, state.settings));
+      calendarSource.push(await toCalendarEvent(event, lectioAccount, state.settings));
     }
     const newlyCancelled = calendarSource.filter((event) =>
       isNewCancellation(event, state.sourceSnapshots[event.sourceId], Boolean(state.lastSuccessAt))
@@ -362,10 +380,9 @@ async function performSync(): Promise<SyncSummary> {
       ? calendarSource.filter((event) => event.lectioStatus !== "cancelled")
       : calendarSource;
 
-    const adapter = calendarAdapter();
     const existing = [];
     for (const group of groupConsecutive(offsets)) {
-      existing.push(...await adapter.listManaged(state.googleCalendarId, weekWindow(baseMonday, group)));
+      existing.push(...await adapter.listManaged(activeCalendarId, weekWindow(baseMonday, group)));
     }
     const uniqueExisting = [...new Map(existing.map((event) => [event.id, event])).values()];
     const nowIso = new Date().toISOString();
@@ -377,7 +394,7 @@ async function performSync(): Promise<SyncSummary> {
     let summary: SyncSummary;
     calendarMutationStarted = true;
     try {
-      summary = await adapter.apply(state.googleCalendarId, reconciliation.operations);
+      summary = await adapter.apply(activeCalendarId, reconciliation.operations);
     } catch (error) {
       if (__TARGET_BROWSER__ === "safari") throw error;
       const interrupted = errorFromUnknown(error);

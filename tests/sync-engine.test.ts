@@ -422,6 +422,22 @@ describe("sync engine", () => {
     expect(browserMock.alarms.create).toHaveBeenCalledWith("lectio-sync-periodic", { periodInMinutes: 37 });
   });
 
+  it("recreates a deleted calendar and continues the sync with its replacement", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    googleMock.ensureConnected.mockResolvedValueOnce({ calendarId: "replacement-calendar", calendarName: "Lectio" });
+
+    await expect(runSync()).resolves.toMatchObject({ inserted: 1 });
+
+    expect(googleMock.ensureConnected).toHaveBeenCalledWith(false, "calendar");
+    expect(googleMock.listManaged).toHaveBeenCalledWith("replacement-calendar", expect.any(Object));
+    expect(googleMock.apply).toHaveBeenCalledWith("replacement-calendar", expect.any(Array));
+    expect(storageMock.state).toMatchObject({
+      googleCalendarId: "replacement-calendar",
+      googleCalendarName: "Lectio",
+      status: "healthy"
+    });
+  });
+
   it("requires both connections before fetching", async () => {
     storageMock.state = state({ lectioAccount: undefined });
     await expect(runSync()).rejects.toMatchObject({ code: "LECTIO_AUTH_REQUIRED" });

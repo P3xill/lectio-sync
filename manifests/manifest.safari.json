@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lectio Sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Privately sync your Lectio timetable to your calendar.",
   "permissions": ["alarms", "storage", "nativeMessaging"],
   "host_permissions": ["https://www.lectio.dk/*"],

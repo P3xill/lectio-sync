@@ -4,6 +4,10 @@ All notable changes to Lectio Sync are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatically recreate the dedicated calendar and resume synchronization when a user deletes it in Google Calendar or Apple Calendar.
+
 ### Added
 
 - Firefox desktop build with Google installed-app OAuth, PKCE, CSRF state validation, refresh, and revocation.
