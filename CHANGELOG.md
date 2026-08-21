@@ -6,7 +6,7 @@ All notable changes to Lectio Sync are documented here.
 
 ### Fixed
 
-- Automatically recreate the dedicated calendar and resume synchronization when a user deletes it in Google Calendar or Apple Calendar.
+- Automatically recreate the dedicated calendar and resume synchronization when Google reports it as missing or deleted.
 
 ### Added
 

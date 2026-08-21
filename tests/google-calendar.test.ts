@@ -83,6 +83,18 @@ describe("GoogleCalendarAdapter", () => {
     expect(JSON.parse(fetchCall(fetchMock, 1)[1].body as string)).toEqual({ summary: "Lectio", timeZone: "Europe/Copenhagen" });
   });
 
+  it("recreates a stored calendar when Google reports that it was deleted", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(410, { error: { errors: [{ reason: "deleted" }], message: "Resource has been deleted" } }))
+      .mockResolvedValueOnce(response(200, { id: "replacement-calendar" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new GoogleCalendarAdapter().ensureConnected(false, "deleted-calendar")).resolves.toEqual({
+      calendarId: "replacement-calendar", calendarName: "Lectio"
+    });
+    expect(fetchCall(fetchMock, 1)[1].method).toBe("POST");
+  });
+
   it("lists only owned events across every result page", async () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(response(200, {

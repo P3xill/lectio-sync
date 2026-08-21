@@ -134,7 +134,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
         await this.request(`/calendars/${encodeURIComponent(currentCalendarId)}`, {}, interactive);
         return { calendarId: currentCalendarId, calendarName: "Lectio" };
       } catch (error) {
-        if (!(error instanceof GoogleApiError) || error.status !== 404) throw error;
+        if (!(error instanceof GoogleApiError) || (error.status !== 404 && error.status !== 410)) throw error;
       }
     }
 
