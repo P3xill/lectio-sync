@@ -12,7 +12,7 @@ export default function Support() {
         <li>Open Lectio in the same browser and confirm that you are still signed in.</li>
         <li>Open Lectio Sync and use <strong>Sync now</strong>.</li>
         <li>If the session expired, sign in again on the real Lectio website and retry.</li>
-        <li>For Safari, confirm that the Google account is configured in Apple Calendar and Calendar access is allowed.</li>
+        <li>For Safari, confirm that iCloud Calendar is enabled and Calendar access is allowed.</li>
       </ol>
       <h2>Report a problem</h2>
       <p>Please open a GitHub issue with your browser version, the exact error shown by Lectio Sync and safe reproduction steps. Never include student IDs, timetable screenshots, cookies, OAuth codes or authentication details.</p>

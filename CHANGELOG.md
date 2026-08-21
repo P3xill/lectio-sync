@@ -18,6 +18,7 @@ All notable changes to Lectio Sync are documented here.
 
 - Desktop support is now documented explicitly by browser and authentication capability.
 - Build verification now covers Chrome, Firefox, and Safari artifacts.
+- Safari now creates its dedicated calendar in iCloud so it syncs across Apple devices, and never falls back to a device-local calendar.
 
 ## [0.1.9] - 2026-08-07
 

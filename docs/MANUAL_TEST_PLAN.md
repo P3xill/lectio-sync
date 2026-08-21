@@ -56,10 +56,11 @@ Use only the applicable numbered rows; Brave reuses Chrome cases, Firefox has si
 ## Safari on macOS
 
 1. Build/sign the generated Xcode project, enable the extension, and grant only the requested Safari host and Calendar permissions.
-2. Verify the native bridge finds the Google account configured in Internet Accounts and creates/uses its `Lectio` calendar.
-3. Repeat the initial, update, cancellation, expiry, and recovery cases above.
-4. Attempt to pass the native bridge an event without a Lectio ownership marker in a debug test and verify deletion is rejected.
-5. Quit/reopen Safari and verify the extension resumes safely.
+2. Verify the native bridge finds iCloud Calendar and creates/uses `Lectio` under iCloud, never under “On My Mac.”
+3. Confirm the calendar and a synced event appear on a second Apple device signed into the same Apple Account.
+4. Repeat the initial, update, cancellation, expiry, and recovery cases above.
+5. Attempt to pass the native bridge an event without a Lectio ownership marker in a debug test and verify deletion is rejected.
+6. Quit/reopen Safari and verify the extension resumes safely.
 
 ## Negative parser fixtures
 

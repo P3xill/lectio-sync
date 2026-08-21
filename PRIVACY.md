@@ -16,7 +16,7 @@ The extension does not store Lectio page HTML, MitID data, Lectio cookies, Googl
 
 - Lectio receives normal authenticated timetable requests from the student's browser.
 - Chrome, Brave, and Firefox send the selected timetable fields to Google Calendar because the user explicitly connects it.
-- Safari sends the selected timetable fields to Apple EventKit, which writes them to the Google calendar configured in Apple Calendar.
+- Safari sends the selected timetable fields to Apple EventKit, which writes them to the dedicated iCloud calendar in Apple Calendar.
 
 By default, calendar events contain the module/activity title, activity note, time, room, teacher, Lectio activity link, and cancellation state. Homework is disabled by default and is included only after the user enables it. Attached files and their contents are not copied.
 

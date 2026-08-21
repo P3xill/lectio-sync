@@ -68,7 +68,7 @@ export default function Home() {
             ["Chrome", "Google Calendar"],
             ["Brave", "Google Calendar"],
             ["Firefox", "Google Calendar"],
-            ["Safari", "Apple Calendar / EventKit"],
+            ["Safari", "iCloud Calendar / EventKit"],
           ].map(([browser, calendar]) => (
             <div className="browserCard" key={browser}><strong>{browser}</strong><span>{calendar}</span><small>Coming to the official store</small></div>
           ))}

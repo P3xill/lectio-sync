@@ -51,8 +51,11 @@ describe("extension security posture", () => {
     expect(handler).toContain("LectioSyncOwnedCalendarIdentifierV1");
     expect(handler).toContain("ownedCalendar(withIdentifier: calendarId)");
     expect(handler).toContain("UserDefaults.standard.set(calendar.calendarIdentifier");
-    expect(handler).toContain("preferredGoogleSourceIdentifiers()");
+    expect(handler).toContain("preferredICloudSourceIdentifiers()");
     expect(handler).toContain("defaultCalendarForNewEvents?.source");
+    expect(handler).toContain("source.sourceType == .calDAV || source.sourceType == .mobileMe");
+    expect(handler).toContain('label.contains("icloud") || label.contains("mobileme")');
+    expect(handler).not.toContain("isGoogleSource");
     expect(handler).toContain("$0.allowsContentModifications && !$0.isSubscribed");
     expect(handler).not.toMatch(/eventStore\.calendars\(for: \.event\)\.first/);
   });

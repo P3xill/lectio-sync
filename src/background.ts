@@ -227,12 +227,21 @@ async function refreshLectioConnection() {
 }
 
 async function restoreSafariCalendarConnection(state: Awaited<ReturnType<typeof getState>>) {
-  if (__TARGET_BROWSER__ !== "safari" || !state.lectioAccount || state.googleCalendarId) return state;
+  if (__TARGET_BROWSER__ !== "safari" || !state.lectioAccount) return state;
   try {
+    // Re-resolve the EventKit calendar on startup. This also moves installations
+    // from the former Google/local Safari calendar target to the iCloud target.
     return await connectCalendar(false);
-  } catch {
-    // Calendar permission may not have been granted yet. Setup remains available.
-    return state;
+  } catch (error) {
+    // Keep first-time setup quiet until calendar access is requested explicitly.
+    if (!state.googleCalendarId) return state;
+    // An older or removed provider calendar must not continue to look connected.
+    return patchState({
+      googleCalendarId: undefined,
+      googleCalendarName: undefined,
+      status: "google_disconnected",
+      lastError: toRuntimeSafeError(error)
+    });
   }
 }
 

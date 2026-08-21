@@ -95,7 +95,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 try result.get()
                 guard let calendarId = message["calendarId"] as? String,
                       let calendar = self.ownedCalendar(withIdentifier: calendarId) else {
-                    throw BridgeError("The Lectio Google calendar is unavailable. Reconnect it in Lectio Sync.")
+                    throw BridgeError("The Lectio iCloud calendar is unavailable. Reconnect it in Lectio Sync.")
                 }
                 self.complete(context, data: try action(calendar))
             } catch {
@@ -160,13 +160,13 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             UserDefaults.standard.removeObject(forKey: ownedCalendarIdentifierKey)
         }
 
-        let sourceIdentifiers = preferredGoogleSourceIdentifiers()
+        let sourceIdentifiers = preferredICloudSourceIdentifiers()
         guard !sourceIdentifiers.isEmpty else {
-            throw BridgeError("No Google Calendar account was found. Add Google in System Settings › Internet Accounts, then try again.")
+            throw BridgeError("iCloud Calendar is unavailable. Turn on Calendars in System Settings › Apple Account › iCloud, then try again.")
         }
 
-        // EventKit doesn't guarantee source order, and a Google account can expose
-        // read-only/delegated CalDAV sources alongside the writable primary source.
+        // EventKit doesn't guarantee source order. Only consider iCloud sources so
+        // the calendar can never silently fall back to a device-local account.
         for sourceIdentifier in sourceIdentifiers {
             guard let source = eventStore.source(withIdentifier: sourceIdentifier) else { continue }
 
@@ -185,21 +185,21 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
                 return calendar
             } catch {
-                // Revert this failed candidate before trying the next Google source.
+                // Revert this failed candidate before trying the next iCloud source.
                 eventStore.reset()
             }
         }
 
-        throw BridgeError("Apple Calendar found your Google account, but none of its sources allow a Lectio calendar to be created. In Apple Calendar, create a calendar named ‘Lectio’ under Google, then try again.")
+        throw BridgeError("Apple Calendar found iCloud, but could not create the Lectio calendar there. In Apple Calendar, create a calendar named ‘Lectio’ under iCloud, then try again.")
     }
 
-    private func preferredGoogleSourceIdentifiers() -> [String] {
+    private func preferredICloudSourceIdentifiers() -> [String] {
         var identifiers: [String] = []
         if let defaultSource = eventStore.defaultCalendarForNewEvents?.source,
-           isGoogleSource(defaultSource) {
+           isICloudSource(defaultSource) {
             identifiers.append(defaultSource.sourceIdentifier)
         }
-        for source in eventStore.sources where isGoogleSource(source) {
+        for source in eventStore.sources where isICloudSource(source) {
             if !identifiers.contains(source.sourceIdentifier) {
                 identifiers.append(source.sourceIdentifier)
             }
@@ -211,14 +211,14 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         guard UserDefaults.standard.string(forKey: ownedCalendarIdentifierKey) == identifier,
               let calendar = eventStore.calendar(withIdentifier: identifier),
               calendar.title == calendarName,
-              isGoogleSource(calendar.source) else { return nil }
+              isICloudSource(calendar.source) else { return nil }
         return calendar
     }
 
-    private func isGoogleSource(_ source: EKSource) -> Bool {
-        guard source.sourceType == .calDAV else { return false }
+    private func isICloudSource(_ source: EKSource) -> Bool {
+        guard source.sourceType == .calDAV || source.sourceType == .mobileMe else { return false }
         let label = "\(source.title) \(source.sourceIdentifier)".lowercased()
-        return label.contains("google") || label.contains("gmail")
+        return label.contains("icloud") || label.contains("mobileme")
     }
 
     private func apply(operations: [[String: Any]], to calendar: EKCalendar) throws -> [String: Any] {

@@ -17,7 +17,7 @@ Lectio Sync helps Danish students keep their Lectio timetable in a dedicated cal
 
 The extension is local-first. It has no advertising, analytics, telemetry, or hosted application backend. It never asks for a Lectio password, automates MitID, or reads browser cookies directly. If Lectio returns an unexpected page or an expired session, synchronization stops before calendar changes are made.
 
-When the student connects Google Calendar, the extension sends the selected timetable fields to Google so it can create and update the dedicated calendar. Firefox stores a revocable Google OAuth refresh token locally so background synchronization can continue after Firefox restarts. No timetable data or OAuth token is sent to Lectio Sync or any analytics service.
+On Chrome, Brave, and Firefox, the extension sends the selected timetable fields to Google Calendar so it can create and update the dedicated calendar. On Safari, Apple EventKit writes them to a dedicated iCloud calendar so it syncs across the student's Apple devices. Firefox stores a revocable Google OAuth refresh token locally so background synchronization can continue after Firefox restarts. No timetable data or OAuth token is sent to Lectio Sync or any analytics service.
 
 Features:
 
@@ -36,7 +36,7 @@ Features:
 - **Storage:** keeps settings, calendar identifiers, and safe reconciliation metadata locally.
 - **Alarms:** schedules best-effort background checks while the browser is available.
 - **Notifications:** reports cancellations and paused synchronization.
-- **Safari native messaging and Calendar access:** communicates with the signed companion app, which uses EventKit to update the dedicated calendar.
+- **Safari native messaging and Calendar access:** communicates with the signed companion app, which uses EventKit to update the dedicated iCloud calendar.
 
 ## Support statement
 

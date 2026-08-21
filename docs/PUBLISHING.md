@@ -8,7 +8,7 @@ This guide separates reproducible repository work from steps that require the ma
 | --- | --- | --- |
 | Chrome package | Google Chrome and Brave | Chrome Identity API in Chrome; browser-managed Web OAuth callback in Brave |
 | Firefox package | Mozilla Firefox | Google Desktop OAuth client with PKCE and Firefox's loopback callback |
-| Safari app | Safari on macOS | Apple EventKit and the Google account configured in macOS |
+| Safari app | Safari on macOS | Apple EventKit and iCloud Calendar configured in macOS |
 
 Edge, Opera, and Vivaldi can often load Chromium extension code, but Lectio Sync does not claim support because they do not provide Chrome's Google token service consistently. A secure release for those browsers requires a separately reviewed native helper or hosted OAuth component.
 
@@ -72,7 +72,7 @@ Select the maintainer's Apple team, use a stable bundle identifier, create an Ar
 ### Mac App Store
 
 - Provide Apple Calendar usage explanations that match the generated `Info.plist` values.
-- Explain that the app uses the student's existing Google account through EventKit and does not receive their Google password.
+- Explain that the app uses the student's iCloud Calendar through EventKit and does not receive their Apple Account password.
 - Complete App Privacy answers using `PRIVACY.md` as the source of truth.
 
 ## Release gate

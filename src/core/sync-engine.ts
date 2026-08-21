@@ -328,7 +328,12 @@ export async function connectCalendar(interactive = true): Promise<ExtensionStat
 async function performSync(): Promise<SyncSummary> {
   let state = await getState();
   if (!state.lectioAccount) throw makeSafeError("LECTIO_AUTH_REQUIRED", "Connect Lectio first.");
-  if (!state.googleCalendarId) throw makeSafeError("GOOGLE_AUTH_REQUIRED", "Connect Google Calendar first.");
+  if (!state.googleCalendarId) {
+    throw makeSafeError(
+      __TARGET_BROWSER__ === "safari" ? "SAFARI_CALENDAR_REQUIRED" : "GOOGLE_AUTH_REQUIRED",
+      __TARGET_BROWSER__ === "safari" ? "Connect iCloud Calendar first." : "Connect Google Calendar first."
+    );
+  }
   const lectioAccount = state.lectioAccount;
   let activeCalendarId = state.googleCalendarId;
   let identity = syncIdentity(state)!;

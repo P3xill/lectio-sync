@@ -20,7 +20,7 @@ export default function Privacy() {
       <ul>
         <li>Lectio receives normal authenticated timetable requests from the student’s browser.</li>
         <li>Chrome, Brave and Firefox send selected timetable fields to Google Calendar after the user explicitly connects it.</li>
-        <li>Safari sends selected timetable fields to Apple EventKit, which writes them to the Google calendar configured in Apple Calendar.</li>
+        <li>Safari sends selected timetable fields to Apple EventKit, which writes them to the dedicated iCloud calendar in Apple Calendar.</li>
       </ul>
       <p>Calendar events can contain the activity title, note, time, room, teacher, Lectio activity link and cancellation state. Homework is disabled by default. Attached files and their contents are not copied.</p>
 

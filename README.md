@@ -105,14 +105,16 @@ The signed add-on must keep the `browser_specific_settings.gecko.id` value stabl
 
 ### Safari
 
-Safari cannot use Chrome's `identity` API. Instead, Lectio Sync writes through Apple's EventKit to the Google account already configured in Apple Calendar.
+Safari cannot use Chrome's `identity` API. Instead, Lectio Sync writes through Apple's EventKit to a dedicated iCloud calendar, so events appear on the user's other Apple devices.
 
 ```sh
 npm run convert:safari
 open "Safari/Lectio Sync/Lectio Sync.xcodeproj"
 ```
 
-In Xcode, select a development team and run the **Lectio Sync (macOS)** scheme. Then enable Lectio Sync in **Safari → Settings → Extensions**. The student must first add a Google account in **System Settings → Internet Accounts** and allow Lectio Sync calendar access.
+In Xcode, select a development team and run the **Lectio Sync (macOS)** scheme. Then enable Lectio Sync in **Safari → Settings → Extensions**. The student must first turn on Calendars in **System Settings → Apple Account → iCloud** and allow Lectio Sync calendar access.
+
+After upgrading from a Safari build that used a Google or device-local calendar, reopen Safari and reconnect the calendar if prompted. Lectio Sync creates or uses `Lectio` under iCloud; the old calendar is left untouched and can be removed manually after the iCloud copy has synced.
 
 For repeat local testing after the extension has been signed once, use:
 

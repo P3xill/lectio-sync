@@ -18,8 +18,8 @@ let transientIsError = false;
 let browserApi: typeof browser | undefined;
 
 const isSafari = __TARGET_BROWSER__ === "safari";
-const calendarStatusLabel = isSafari ? "Apple Calendar" : "Google Calendar";
-const connectCalendarLabel = isSafari ? "Connect Apple Calendar" : "Connect Google Calendar";
+const calendarStatusLabel = isSafari ? "iCloud Calendar" : "Google Calendar";
+const connectCalendarLabel = isSafari ? "Connect iCloud Calendar" : "Connect Google Calendar";
 const settingsMenuFocusSelector = '[data-focus-key="settings-menu"]';
 const settingsActionFocusSelector = '[data-focus-key="settings-action"]';
 const detailsActionFocusSelector = '[data-focus-key="view-details"]';
@@ -223,7 +223,7 @@ function setupView(): HTMLElement {
       googleConnected
         ? "Dedicated Lectio calendar"
         : isSafari
-          ? "Uses your Google account in Apple Calendar"
+          ? "Syncs through iCloud Calendar"
           : "Only the calendar we create"
     )
   );
