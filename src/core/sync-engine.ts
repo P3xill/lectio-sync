@@ -299,6 +299,10 @@ function errorFromUnknown(error: unknown): SafeError {
   return makeSafeError("UNKNOWN", "Synchronization stopped before changing your calendar.", String(error));
 }
 
+function isMissingGoogleCalendar(error: unknown): error is GoogleApiError {
+  return error instanceof GoogleApiError && (error.status === 404 || error.status === 410);
+}
+
 async function resetSyncAlarm(intervalMinutes: number): Promise<string> {
   await browser.alarms.clear(ALARM_NAME);
   await browser.alarms.create(ALARM_NAME, { periodInMinutes: intervalMinutes });
@@ -380,9 +384,34 @@ async function performSync(): Promise<SyncSummary> {
       ? calendarSource.filter((event) => event.lectioStatus !== "cancelled")
       : calendarSource;
 
-    const existing = [];
-    for (const group of groupConsecutive(offsets)) {
-      existing.push(...await adapter.listManaged(activeCalendarId, weekWindow(baseMonday, group)));
+    const listExisting = async (calendarId: string) => {
+      const events = [];
+      for (const group of groupConsecutive(offsets)) {
+        events.push(...await adapter.listManaged(calendarId, weekWindow(baseMonday, group)));
+      }
+      return events;
+    };
+
+    let existing;
+    try {
+      existing = await listExisting(activeCalendarId);
+    } catch (error) {
+      if (__TARGET_BROWSER__ === "safari" || !isMissingGoogleCalendar(error)) throw error;
+
+      const replacement = await adapter.ensureConnected(false, undefined);
+      await assertSyncIdentity(identity, false);
+      await patchState({
+        googleCalendarId: replacement.calendarId,
+        googleCalendarName: replacement.calendarName
+      });
+      state = {
+        ...state,
+        googleCalendarId: replacement.calendarId,
+        googleCalendarName: replacement.calendarName
+      };
+      activeCalendarId = replacement.calendarId;
+      identity = syncIdentity(state)!;
+      existing = await listExisting(activeCalendarId);
     }
     const uniqueExisting = [...new Map(existing.map((event) => [event.id, event])).values()];
     const nowIso = new Date().toISOString();

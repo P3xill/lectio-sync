@@ -438,6 +438,28 @@ describe("sync engine", () => {
     });
   });
 
+  it("recreates a deleted calendar when Google only reports it while listing events", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => htmlResponse(emptyHtml)));
+    googleMock.ensureConnected
+      .mockResolvedValueOnce({ calendarId: "calendar", calendarName: "Lectio" })
+      .mockResolvedValueOnce({ calendarId: "replacement-calendar", calendarName: "Lectio" });
+    googleMock.listManaged
+      .mockRejectedValueOnce(new GoogleApiError(410, "Resource has been deleted"))
+      .mockResolvedValueOnce([]);
+
+    await expect(runSync()).resolves.toMatchObject({ inserted: 1 });
+
+    expect(googleMock.ensureConnected).toHaveBeenNthCalledWith(1, false, "calendar");
+    expect(googleMock.ensureConnected).toHaveBeenNthCalledWith(2, false, undefined);
+    expect(googleMock.listManaged).toHaveBeenLastCalledWith("replacement-calendar", expect.any(Object));
+    expect(googleMock.apply).toHaveBeenCalledWith("replacement-calendar", expect.any(Array));
+    expect(storageMock.state).toMatchObject({
+      googleCalendarId: "replacement-calendar",
+      googleCalendarName: "Lectio",
+      status: "healthy"
+    });
+  });
+
   it("requires both connections before fetching", async () => {
     storageMock.state = state({ lectioAccount: undefined });
     await expect(runSync()).rejects.toMatchObject({ code: "LECTIO_AUTH_REQUIRED" });
