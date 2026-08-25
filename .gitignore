@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 artifacts/
+/website/
 .DS_Store
 *.pem
 *.key
