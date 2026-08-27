@@ -19,6 +19,7 @@ export interface LectioAccount {
 export interface SyncSettings {
   intervalMinutes: number;
   horizonWeeks: number;
+  calendarColor: string;
   cancellationMode: CancellationMode;
   includeHomework: boolean;
   includeTitle: boolean;
@@ -34,6 +35,7 @@ export interface ExtensionState {
   status: SyncStatus;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
+  fullSyncThrough?: string;
   nextSyncAt?: string;
   lastError?: SafeError;
   rotationCursor: number;
@@ -119,6 +121,9 @@ export interface SyncSummary {
   completedAt: string;
 }
 
+export const MIN_SYNC_HORIZON_WEEKS = 2;
+export const MAX_SYNC_HORIZON_WEEKS = 12;
+
 export type RuntimeMessage =
   | { type: "GET_STATE" }
   | { type: "START_LECTIO_SETUP" }
@@ -138,7 +143,8 @@ export interface RuntimeResponse<T = unknown> {
 
 export const DEFAULT_SETTINGS: SyncSettings = {
   intervalMinutes: 10,
-  horizonWeeks: 8,
+  horizonWeeks: MAX_SYNC_HORIZON_WEEKS,
+  calendarColor: "#007AFF",
   cancellationMode: "mark",
   includeHomework: false,
   includeTitle: true,

@@ -1,6 +1,6 @@
 import type browser from "webextension-polyfill";
 import { formatDisplayDateTime, formatDisplayTime } from "../core/date";
-import { MAX_CHECK_INTERVAL_MINUTES, MIN_CHECK_INTERVAL_MINUTES } from "../core/settings";
+import { CALENDAR_COLOR_OPTIONS, MAX_CHECK_INTERVAL_MINUTES, MIN_CHECK_INTERVAL_MINUTES } from "../core/settings";
 import { DEFAULT_STATE, type ExtensionState, type RuntimeMessage, type RuntimeResponse } from "../core/types";
 import "./styles.css";
 
@@ -18,7 +18,7 @@ let transientIsError = false;
 let browserApi: typeof browser | undefined;
 
 const isSafari = __TARGET_BROWSER__ === "safari";
-const calendarStatusLabel = isSafari ? "Apple Calendar" : "Google Calendar";
+const calendarStatusLabel = isSafari ? "Google via Apple Calendar" : "Google Calendar";
 const connectCalendarLabel = isSafari ? "Connect Apple Calendar" : "Connect Google Calendar";
 const settingsMenuFocusSelector = '[data-focus-key="settings-menu"]';
 const settingsActionFocusSelector = '[data-focus-key="settings-action"]';
@@ -209,6 +209,19 @@ function statusRow(label: string, connected: boolean, detail?: string): HTMLElem
   );
 }
 
+function appleCalendarNote(): HTMLElement {
+  const text = "Lectio Sync stores events in Google Calendar. Add the same Google account to Apple Calendar on every Mac, iPhone, and iPad where you want to see them.";
+
+  return node("aside", { className: "calendar-note", attrs: { "aria-label": "Apple Calendar setup" } },
+    icon("calendar"),
+    node("div", { className: "calendar-note-copy" },
+      node("strong", { text: "Using Apple Calendar? Connect Google on every device" }),
+      node("p", { text }),
+      node("p", { className: "calendar-note-limit", text: "This version does not create or sync an iCloud calendar." })
+    )
+  );
+}
+
 function setupView(): HTMLElement {
   const lectioConnected = Boolean(state.lectioAccount);
   const googleConnected = Boolean(state.googleCalendarId);
@@ -221,10 +234,10 @@ function setupView(): HTMLElement {
       connectCalendarLabel,
       googleConnected,
       googleConnected
-        ? "Dedicated Lectio calendar"
+        ? "Dedicated Google calendar"
         : isSafari
-          ? "Uses your Google account in Apple Calendar"
-          : "Only the calendar we create"
+          ? "Requires Google in Apple Calendar"
+          : "Creates a dedicated Google calendar"
     )
   );
   const privacy = node("div", { className: "privacy-note" }, icon("lock"), node("span", { text: "No analytics or hosted backend." }));
@@ -252,7 +265,7 @@ function setupView(): HTMLElement {
     });
   }
 
-  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, node("div", { className: "setup-footer" }, privacy, transient(), button)));
+  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, appleCalendarNote(), node("div", { className: "setup-footer" }, privacy, transient(), button)));
 }
 
 function setupStep(number: string, title: string, complete: boolean, detail: string): HTMLElement {
@@ -346,12 +359,18 @@ function settingsView(): HTMLElement {
     "Choose any whole number from 5 minutes to 24 hours."
   );
   const cancellations = selectField("Cancelled modules", "cancellations", ["Mark as cancelled", "Remove after confirmation"], state.settings.cancellationMode === "mark" ? "Mark as cancelled" : "Remove after confirmation");
+  const calendarColor = calendarColorField(
+    "Calendar colour",
+    "calendar-color",
+    state.settings.calendarColor,
+    "Updates the dedicated Google calendar colour. Apple Calendar displays that same calendar."
+  );
   const title = toggleField("Include title", "Lesson titles are used as event names; otherwise the class is used.", state.settings.includeTitle);
   const description = toggleField("Include description", "Lesson descriptions are copied to event notes.", state.settings.includeDescription);
   const className = toggleField("Include class", "Class or hold names are copied to event notes.", state.settings.includeClass);
   const teacher = toggleField("Include teacher", "Teacher names are copied to event notes.", state.settings.includeTeacher);
   const homework = toggleField("Include homework", "Off by default for data minimization.", state.settings.includeHomework);
-  form.append(interval.wrapper, cancellations.wrapper, title.wrapper, description.wrapper, className.wrapper, teacher.wrapper, homework.wrapper);
+  form.append(interval.wrapper, calendarColor.wrapper, cancellations.wrapper, title.wrapper, description.wrapper, className.wrapper, teacher.wrapper, homework.wrapper);
   const save = node("button", { className: "button primary full", attrs: { type: "button" } }, node("span", { text: "Save settings" }));
   save.disabled = busy;
   save.addEventListener("click", () => {
@@ -361,6 +380,7 @@ function settingsView(): HTMLElement {
         type: "UPDATE_SETTINGS",
         settings: {
           intervalMinutes: Number(interval.input.value),
+          calendarColor: calendarColor.value(),
           cancellationMode: cancellations.select.value.startsWith("Mark") ? "mark" : "remove",
           includeTitle: title.input.checked,
           includeDescription: description.input.checked,
@@ -380,10 +400,41 @@ function settingsView(): HTMLElement {
   return node("div", { className: "popup-shell" }, header("Settings", true), node("main", { className: "content settings-content" },
     node("h1", { text: "Settings" }),
     node("p", { className: "lead", text: "Keep the extension quiet, private, and predictable." }),
+    appleCalendarNote(),
     form,
     node("p", { className: "settings-footnote", text: "Lectio credentials and page contents are never stored by the extension." }),
     transient()
   ));
+}
+
+function calendarColorField(label: string, name: string, value: string, detail: string) {
+  const inputs: HTMLInputElement[] = [];
+  const options = node("div", { className: "calendar-color-options", attrs: { role: "radiogroup", "aria-label": label } });
+  for (const option of CALENDAR_COLOR_OPTIONS) {
+    const input = node("input", { attrs: {
+      type: "radio",
+      name,
+      value: option.value,
+      "aria-label": option.name,
+      ...(option.value === value ? { checked: "" } : {})
+    } });
+    inputs.push(input);
+    options.append(node("label", { className: "calendar-color-option", attrs: { title: option.name } },
+      input,
+      node("span", {
+        className: "calendar-color-swatch",
+        attrs: { style: `--calendar-color: ${option.value}`, "aria-hidden": "true" }
+      })
+    ));
+  }
+  return {
+    value: () => inputs.find((input) => input.checked)?.value ?? value,
+    wrapper: node("div", { className: "field calendar-color-field" },
+      node("span", { text: label }),
+      options,
+      node("small", { text: detail, attrs: { id: `${name}-detail` } })
+    )
+  };
 }
 
 function selectField(label: string, name: string, options: string[], selected: string) {

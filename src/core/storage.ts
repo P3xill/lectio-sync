@@ -1,7 +1,9 @@
 import browser from "webextension-polyfill";
-import { sanitizeIntervalMinutes } from "./settings";
+import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./settings";
 import {
   DEFAULT_STATE,
+  MAX_SYNC_HORIZON_WEEKS,
+  MIN_SYNC_HORIZON_WEEKS,
   type ExtensionState,
   type LectioAccount,
   type SafeError,
@@ -17,6 +19,7 @@ const MAX_SOURCE_ID_LENGTH = 500;
 const MAX_FINGERPRINT_LENGTH = 128;
 const MAX_TIMESTAMP_LENGTH = 40;
 const MAX_ERROR_LENGTH = 500;
+const LEGACY_DEFAULT_HORIZON_WEEKS = 8;
 
 const SYNC_STATUSES = new Set<SyncStatus>([
   "not_configured",
@@ -66,13 +69,17 @@ function validTimestamp(value: unknown): string | undefined {
 
 function sanitizeSettings(value: unknown): SyncSettings {
   const input = isRecord(value) ? value : {};
+  const storedHorizon = Number.isInteger(input.horizonWeeks)
+    && Number(input.horizonWeeks) >= MIN_SYNC_HORIZON_WEEKS
+    && Number(input.horizonWeeks) <= MAX_SYNC_HORIZON_WEEKS
+    ? Number(input.horizonWeeks)
+    : DEFAULT_STATE.settings.horizonWeeks;
   return {
     intervalMinutes: sanitizeIntervalMinutes(input.intervalMinutes, DEFAULT_STATE.settings.intervalMinutes),
-    horizonWeeks: Number.isInteger(input.horizonWeeks)
-      && Number(input.horizonWeeks) >= 2
-      && Number(input.horizonWeeks) <= 12
-      ? Number(input.horizonWeeks)
-      : DEFAULT_STATE.settings.horizonWeeks,
+    horizonWeeks: storedHorizon === LEGACY_DEFAULT_HORIZON_WEEKS
+      ? MAX_SYNC_HORIZON_WEEKS
+      : storedHorizon,
+    calendarColor: sanitizeCalendarColor(input.calendarColor, DEFAULT_STATE.settings.calendarColor),
     cancellationMode: input.cancellationMode === "mark" || input.cancellationMode === "remove"
       ? input.cancellationMode
       : DEFAULT_STATE.settings.cancellationMode,
@@ -174,6 +181,7 @@ function sanitizeState(value: unknown): ExtensionState {
   const stored = isRecord(value) ? value : {};
   const lastAttemptAt = validTimestamp(stored.lastAttemptAt);
   const lastSuccessAt = validTimestamp(stored.lastSuccessAt);
+  const fullSyncThrough = validTimestamp(stored.fullSyncThrough);
   const nextSyncAt = validTimestamp(stored.nextSyncAt);
   const googleCalendarId = boundedIdentifier(stored.googleCalendarId, MAX_IDENTIFIER_LENGTH);
   const googleCalendarName = boundedString(stored.googleCalendarName, 120);
@@ -198,6 +206,7 @@ function sanitizeState(value: unknown): ExtensionState {
     ...(googleCalendarId && googleCalendarName ? { googleCalendarName } : {}),
     ...(lastAttemptAt ? { lastAttemptAt } : {}),
     ...(lastSuccessAt ? { lastSuccessAt } : {}),
+    ...(fullSyncThrough ? { fullSyncThrough } : {}),
     ...(nextSyncAt ? { nextSyncAt } : {}),
     ...(lastError ? { lastError } : {})
   };

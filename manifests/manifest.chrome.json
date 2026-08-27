@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lectio Sync",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Privately sync your Lectio timetable to a dedicated Google Calendar.",
   "minimum_chrome_version": "120",
   "permissions": ["alarms", "identity", "notifications", "storage"],

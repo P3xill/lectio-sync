@@ -34,6 +34,8 @@ interface SyncIdentity {
 type StaleSyncError = SafeError & { [STALE_SYNC]: true };
 
 let activeSync: Promise<SyncSummary> | undefined;
+let activeSyncCoversFullHorizon = false;
+let queuedFullSync: Promise<SyncSummary> | undefined;
 
 function calendarAdapter() {
   return __TARGET_BROWSER__ === "safari" ? new SafariCalendarAdapter() : new GoogleCalendarAdapter();
@@ -319,17 +321,22 @@ export async function scheduleNextSync(state?: ExtensionState): Promise<void> {
 
 export async function connectCalendar(interactive = true): Promise<ExtensionState> {
   const state = await getState();
-  const connected = await calendarAdapter().ensureConnected(interactive, state.googleCalendarId);
+  const connected = await calendarAdapter().ensureConnected(interactive, state.googleCalendarId, state.settings.calendarColor);
   const nextStatus = state.lectioAccount ? "ready" as const : state.status;
   return patchState({
     googleCalendarId: connected.calendarId,
     googleCalendarName: connected.calendarName,
+    ...(connected.calendarId !== state.googleCalendarId ? { fullSyncThrough: undefined } : {}),
     status: nextStatus,
     lastError: undefined
   });
 }
 
-async function performSync(): Promise<SyncSummary> {
+export async function updateCalendarColor(calendarId: string, calendarColor: string): Promise<void> {
+  await calendarAdapter().setColor(calendarId, calendarColor);
+}
+
+async function performSync(fullHorizon = false): Promise<SyncSummary> {
   let state = await getState();
   if (!state.lectioAccount) throw makeSafeError("LECTIO_AUTH_REQUIRED", "Connect Lectio first.");
   if (!state.googleCalendarId) throw makeSafeError("GOOGLE_AUTH_REQUIRED", "Connect Google Calendar first.");
@@ -341,24 +348,34 @@ async function performSync(): Promise<SyncSummary> {
   try {
     await patchState({ status: "syncing", lastAttemptAt: new Date().toISOString(), lastError: undefined });
     const adapter = calendarAdapter();
-    const connected = await adapter.ensureConnected(false, activeCalendarId);
+    const connected = await adapter.ensureConnected(false, activeCalendarId, state.settings.calendarColor);
     if (connected.calendarId !== activeCalendarId) {
       await assertSyncIdentity(identity, false);
       await patchState({
         googleCalendarId: connected.calendarId,
-        googleCalendarName: connected.calendarName
+        googleCalendarName: connected.calendarName,
+        fullSyncThrough: undefined
       });
       state = {
         ...state,
         googleCalendarId: connected.calendarId,
-        googleCalendarName: connected.calendarName
+        googleCalendarName: connected.calendarName,
+        fullSyncThrough: undefined
       };
       activeCalendarId = connected.calendarId;
       identity = syncIdentity(state)!;
     }
     const baseMonday = getIsoWeek(new Date()).monday;
+    const requiredFullSyncThrough = addWeeks(baseMonday, state.settings.horizonWeeks + 1).toISOString();
     const initialSync = !state.lastSuccessAt;
-    const offsets = getFetchWeekOffsets(initialSync, state.settings.horizonWeeks, state.rotationCursor);
+    const coverageIncomplete = !state.fullSyncThrough
+      || Date.parse(state.fullSyncThrough) < Date.parse(requiredFullSyncThrough);
+    const completeHorizon = initialSync || fullHorizon || coverageIncomplete;
+    const offsets = getFetchWeekOffsets(
+      completeHorizon,
+      state.settings.horizonWeeks,
+      state.rotationCursor
+    );
     const desiredSource: LectioEvent[] = [];
     for (const offset of offsets) {
       desiredSource.push(...await fetchScheduleWeek(
@@ -398,19 +415,22 @@ async function performSync(): Promise<SyncSummary> {
     } catch (error) {
       if (__TARGET_BROWSER__ === "safari" || !isMissingGoogleCalendar(error)) throw error;
 
-      const replacement = await adapter.ensureConnected(false, undefined);
+      const replacement = await adapter.ensureConnected(false, undefined, state.settings.calendarColor);
       await assertSyncIdentity(identity, false);
       await patchState({
         googleCalendarId: replacement.calendarId,
-        googleCalendarName: replacement.calendarName
+        googleCalendarName: replacement.calendarName,
+        fullSyncThrough: undefined
       });
       state = {
         ...state,
         googleCalendarId: replacement.calendarId,
-        googleCalendarName: replacement.calendarName
+        googleCalendarName: replacement.calendarName,
+        fullSyncThrough: undefined
       };
       activeCalendarId = replacement.calendarId;
       identity = syncIdentity(state)!;
+      if (!completeHorizon) return performSync(true);
       existing = await listExisting(activeCalendarId);
     }
     const uniqueExisting = [...new Map(existing.map((event) => [event.id, event])).values()];
@@ -457,6 +477,7 @@ async function performSync(): Promise<SyncSummary> {
     await patchState({
       status: "healthy",
       lastSuccessAt: nowIso,
+      ...(completeHorizon ? { fullSyncThrough: requiredFullSyncThrough } : {}),
       lastAttemptAt: nowIso,
       lastError: undefined,
       nextSyncAt,
@@ -482,15 +503,44 @@ async function performSync(): Promise<SyncSummary> {
   }
 }
 
-export function runSync(): Promise<SyncSummary> {
-  if (activeSync) return activeSync;
-  const sync = performSync();
+export function runSync(fullHorizon = false): Promise<SyncSummary> {
+  if (activeSync) {
+    if (!fullHorizon || activeSyncCoversFullHorizon) return activeSync;
+    if (queuedFullSync) return queuedFullSync;
+
+    const precedingSync = activeSync;
+    const queued = precedingSync.then(
+      () => {
+        clearActiveSync(precedingSync);
+        return runSync(true);
+      },
+      () => {
+        clearActiveSync(precedingSync);
+        return runSync(true);
+      }
+    );
+    queuedFullSync = queued;
+    void queued.then(
+      () => { if (queuedFullSync === queued) queuedFullSync = undefined; },
+      () => { if (queuedFullSync === queued) queuedFullSync = undefined; }
+    );
+    return queued;
+  }
+
+  const sync = performSync(fullHorizon);
   activeSync = sync;
-  const clearActiveSync = () => {
-    if (activeSync === sync) activeSync = undefined;
-  };
-  void sync.then(clearActiveSync, clearActiveSync);
+  activeSyncCoversFullHorizon = fullHorizon;
+  void sync.then(
+    () => clearActiveSync(sync),
+    () => clearActiveSync(sync)
+  );
   return sync;
+}
+
+function clearActiveSync(sync: Promise<SyncSummary>): void {
+  if (activeSync !== sync) return;
+  activeSync = undefined;
+  activeSyncCoversFullHorizon = false;
 }
 
 export { ALARM_NAME };

@@ -29,6 +29,12 @@ There is no Lectio password form, no MitID automation, and no hosted backend. Th
 
 When the Lectio session expires, the extension pauses and asks the student to sign in again. Existing calendar events are left untouched.
 
+### Using Apple Calendar
+
+This version of Lectio Sync stores timetable events in a dedicated **Google Calendar**. It does not create or sync an iCloud calendar.
+
+To see the Lectio calendar in Apple Calendar, add the same Google account to Apple Calendar on every Mac, iPhone, and iPad where it should appear, enable calendar syncing for that account, and make sure the `Lectio` calendar is visible. Using the same Apple Account alone is not sufficient because the calendar belongs to Google, not iCloud.
+
 ## Development
 
 Requirements: Node.js 20.12 or later. Safari additionally requires macOS and Xcode.
@@ -38,7 +44,7 @@ npm install
 npm run verify
 ```
 
-`npm run verify` type-checks the code, runs the full coverage-gated test suite, and builds all three release targets.
+`npm run verify` type-checks the source and builds all three release targets.
 
 ## Browser support
 
@@ -105,7 +111,7 @@ The signed add-on must keep the `browser_specific_settings.gecko.id` value stabl
 
 ### Safari
 
-Safari cannot use Chrome's `identity` API. Instead, Lectio Sync writes through Apple's EventKit to the Google account already configured in Apple Calendar.
+Safari cannot use Chrome's `identity` API. Instead, Lectio Sync writes through Apple's EventKit to the Google account already configured in Apple Calendar. The resulting `Lectio` calendar is still a Google calendar, not an iCloud calendar.
 
 ```sh
 npm run convert:safari
@@ -142,10 +148,8 @@ Removing that limitation would require an always-on backend. Because an unattend
 - `src/popup/` — setup, status, settings, and recovery UI.
 - `manifests/` — least-privilege Chrome, Firefox, and Safari Manifest V3 templates.
 - `safari-native/` — reviewed EventKit bridge copied into the generated Xcode project.
-- `tests/` — fixtures and unit/integration/security tests.
-- `docs/qa/` — rendered popup screenshots from the browser QA pass.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md), [docs/PUBLISHING.md](docs/PUBLISHING.md), and [docs/MANUAL_TEST_PLAN.md](docs/MANUAL_TEST_PLAN.md) before publishing.
+See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) before publishing.
 
 ## Reference documentation
 

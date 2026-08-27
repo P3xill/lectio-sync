@@ -128,7 +128,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
     }
   }
 
-  async ensureConnected(interactive: boolean, currentCalendarId?: string): Promise<{ calendarId: string; calendarName: string }> {
+  async ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
     if (currentCalendarId) {
       try {
         await this.request(`/calendars/${encodeURIComponent(currentCalendarId)}`, {}, interactive);
@@ -142,7 +142,27 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       method: "POST",
       body: JSON.stringify({ summary: "Lectio", timeZone: "Europe/Copenhagen" })
     }, interactive);
+    if (calendarColor) await this.setColor(calendar.id, calendarColor);
     return { calendarId: calendar.id, calendarName: "Lectio" };
+  }
+
+  async setColor(calendarId: string, calendarColor: string): Promise<void> {
+    const red = Number.parseInt(calendarColor.slice(1, 3), 16);
+    const green = Number.parseInt(calendarColor.slice(3, 5), 16);
+    const blue = Number.parseInt(calendarColor.slice(5, 7), 16);
+    if (!/^#[0-9A-Fa-f]{6}$/.test(calendarColor) || [red, green, blue].some(Number.isNaN)) {
+      throw new GoogleApiError(400, "The calendar colour was invalid.");
+    }
+    const foregroundColor = (red * 299 + green * 587 + blue * 114) / 1_000 >= 150
+      ? "#000000"
+      : "#FFFFFF";
+    await this.request(
+      `/users/me/calendarList/${encodeURIComponent(calendarId)}?colorRgbFormat=true`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ backgroundColor: calendarColor.toUpperCase(), foregroundColor })
+      }
+    );
   }
 
   async listManaged(calendarId: string, window: CalendarWindow): Promise<ManagedCalendarEvent[]> {

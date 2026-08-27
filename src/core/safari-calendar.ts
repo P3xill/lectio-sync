@@ -24,8 +24,12 @@ export class SafariCalendarAdapter implements CalendarAdapter {
     return response.data;
   }
 
-  ensureConnected(interactive: boolean, currentCalendarId?: string): Promise<{ calendarId: string; calendarName: string }> {
-    return this.send("ENSURE_CALENDAR", { interactive, currentCalendarId });
+  ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
+    return this.send("ENSURE_CALENDAR", { interactive, currentCalendarId, calendarColor });
+  }
+
+  async setColor(calendarId: string, calendarColor: string): Promise<void> {
+    await this.ensureConnected(false, calendarId, calendarColor);
   }
 
   listManaged(calendarId: string, window: CalendarWindow): Promise<ManagedCalendarEvent[]> {
