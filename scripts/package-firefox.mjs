@@ -11,7 +11,7 @@ if (
   background.includes("REPLACE_WITH_FIREFOX_DESKTOP_OAUTH_CLIENT_ID")
   || background.includes("REPLACE_WITH_FIREFOX_DESKTOP_OAUTH_CLIENT_SECRET")
 ) {
-  throw new Error("Set the Firefox Desktop OAuth client ID and issued client secret before packaging. See .env.example.");
+  throw new Error("Set the Firefox Desktop OAuth client ID and issued client secret before packaging. See README.md.");
 }
 
 await mkdir(artifacts, { recursive: true });

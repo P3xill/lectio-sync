@@ -13,4 +13,3 @@ Safari/Lectio Sync/
 web-ext-artifacts/
 .env
 .env.*
-!.env.example
