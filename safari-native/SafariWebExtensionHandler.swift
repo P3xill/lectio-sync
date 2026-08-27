@@ -1,4 +1,5 @@
 import EventKit
+import CoreGraphics
 import Foundation
 import SafariServices
 
@@ -20,12 +21,13 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         switch type {
         case "ENSURE_CALENDAR":
             let interactive = message["interactive"] as? Bool ?? false
+            let calendarColor = message["calendarColor"] as? String
             requestCalendarAccess(interactive: interactive) { [weak self] result in
                 guard let self else { return }
                 switch result {
                 case .success:
                     do {
-                        let calendar = try self.ensureCalendar()
+                        let calendar = try self.ensureCalendar(colorHex: calendarColor)
                         self.complete(context, data: [
                             "calendarId": calendar.calendarIdentifier,
                             "calendarName": calendar.title
@@ -152,9 +154,11 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         return status == .authorized
     }
 
-    private func ensureCalendar() throws -> EKCalendar {
+    private func ensureCalendar(colorHex: String?) throws -> EKCalendar {
+        let desiredColor = colorHex.flatMap(calendarColor(from:))
         if let ownedIdentifier = UserDefaults.standard.string(forKey: ownedCalendarIdentifierKey) {
             if let owned = ownedCalendar(withIdentifier: ownedIdentifier) {
+                try apply(desiredColor, to: owned)
                 return owned
             }
             UserDefaults.standard.removeObject(forKey: ownedCalendarIdentifierKey)
@@ -173,6 +177,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             if let existing = source.calendars(for: .event).first(where: {
                 $0.title == calendarName && $0.allowsContentModifications && !$0.isSubscribed
             }) {
+                try apply(desiredColor, to: existing)
                 UserDefaults.standard.set(existing.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
                 return existing
             }
@@ -180,6 +185,9 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             let calendar = EKCalendar(for: .event, eventStore: eventStore)
             calendar.title = calendarName
             calendar.source = source
+            if #available(macOS 10.15, *), let desiredColor {
+                calendar.cgColor = desiredColor
+            }
             do {
                 try eventStore.saveCalendar(calendar, commit: true)
                 UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
@@ -191,6 +199,29 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         }
 
         throw BridgeError("Apple Calendar found your Google account, but none of its sources allow a Lectio calendar to be created. In Apple Calendar, create a calendar named ‘Lectio’ under Google, then try again.")
+    }
+
+    private func apply(_ color: CGColor?, to calendar: EKCalendar) throws {
+        guard let color else { return }
+        if #available(macOS 10.15, *) {
+            guard calendar.cgColor != color else { return }
+            calendar.cgColor = color
+            try eventStore.saveCalendar(calendar, commit: true)
+        }
+    }
+
+    private func calendarColor(from hex: String) -> CGColor? {
+        guard hex.range(of: #"^#[0-9A-Fa-f]{6}$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        var value: UInt64 = 0
+        guard Scanner(string: String(hex.dropFirst())).scanHexInt64(&value) else { return nil }
+        return CGColor(
+            red: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
     }
 
     private func preferredGoogleSourceIdentifiers() -> [String] {

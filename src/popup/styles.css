@@ -99,6 +99,8 @@ h1:focus { outline: 3px solid var(--blue); outline-offset: 4px; }
   flex-direction: column;
 }
 
+.setup-content { padding-top: 26px; padding-bottom: 24px; }
+
 h1 {
   margin: 0;
   font-size: 31px;
@@ -115,13 +117,22 @@ h1 {
 }
 
 .steps { margin: 36px 0 0; position: relative; }
+.setup-content .steps { margin-top: 28px; }
 .steps::before { content: ""; position: absolute; left: 18px; top: 36px; bottom: 44px; width: 2px; background: #cdd7eb; }
 .step { display: flex; gap: 16px; min-height: 92px; position: relative; }
+.setup-content .step { min-height: 84px; }
 .step-number { position: relative; z-index: 1; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 50%; background: #fff; display: grid; place-items: center; font-weight: 700; color: var(--navy); }
 .step.complete .step-number, .step:first-child:not(.complete) .step-number { color: #fff; background: var(--blue); border-color: var(--blue); }
 .step-copy { display: flex; flex-direction: column; gap: 5px; padding-top: 5px; }
 .step-copy strong { font-size: 17px; line-height: 1.2; }
 .step-copy span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.calendar-note { display: flex; align-items: flex-start; gap: 11px; margin: 4px 0 22px; padding: 13px 14px; border-left: 3px solid var(--blue); background: var(--soft); text-align: left; }
+.calendar-note > svg { width: 20px; height: 20px; flex: 0 0 auto; margin-top: 1px; fill: none; stroke: var(--blue); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.calendar-note-copy { display: grid; gap: 3px; }
+.calendar-note-copy strong { font-size: 14px; line-height: 1.35; }
+.calendar-note-copy p { margin: 0; color: var(--navy); font-size: 13px; line-height: 1.45; }
+.calendar-note-copy .calendar-note-limit { color: var(--muted); font-size: 12px; }
+.setup-content .calendar-note { margin-bottom: 18px; }
 .setup-footer { margin-top: auto; }
 .privacy-note { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; margin-bottom: 18px; }
 .privacy-note svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -171,9 +182,18 @@ h1 {
 .recovery-actions { width: 100%; margin-top: auto; display: grid; gap: 11px; }
 
 .settings-content h1 { font-size: 28px; }
+.settings-content > .calendar-note { margin: 20px 0 0; }
 .settings-form { margin-top: 24px; display: grid; gap: 18px; }
 .field { display: grid; gap: 8px; font-size: 14px; font-weight: 700; }
 .field select, .field input[type="number"] { width: 100%; height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; color: var(--navy); background: #fff; font-size: 14px; }
+.calendar-color-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 3px; }
+.calendar-color-option { position: relative; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; }
+.calendar-color-option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.calendar-color-swatch { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--calendar-color); border: 2px solid rgba(11, 23, 57, .16); transition: transform .15s ease, box-shadow .15s ease; }
+.calendar-color-option:hover .calendar-color-swatch { transform: scale(1.08); }
+.calendar-color-option input:checked + .calendar-color-swatch { box-shadow: 0 0 0 3px #fff, 0 0 0 6px var(--navy); }
+.calendar-color-option input:checked + .calendar-color-swatch::after { content: "✓"; color: #fff; font-size: 18px; font-weight: 800; line-height: 1; text-shadow: 0 1px 2px rgba(0, 0, 0, .7); }
+.calendar-color-option input:focus-visible + .calendar-color-swatch { outline: 3px solid var(--blue); outline-offset: 4px; }
 .field small { color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.4; }
 .toggle-field { display: flex; align-items: center; justify-content: space-between; gap: 18px; cursor: pointer; }
 .toggle-copy { display: grid; gap: 3px; }

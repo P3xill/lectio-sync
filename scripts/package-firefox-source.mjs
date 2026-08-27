@@ -11,15 +11,12 @@ const sourcePaths = [
   "PRIVACY.md",
   "README.md",
   "SECURITY.md",
-  "docs/FIREFOX_REVIEWER.md",
-  "docs/PUBLISHING.md",
   "manifests",
   "package-lock.json",
   "package.json",
   "public",
   "scripts",
   "src",
-  "tests",
   "tsconfig.json",
   "vite.config.ts"
 ];

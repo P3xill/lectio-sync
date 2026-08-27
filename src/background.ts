@@ -1,13 +1,20 @@
 import browser from "webextension-polyfill";
 import { schoolIdFromUrl } from "./core/account";
-import { sanitizeIntervalMinutes } from "./core/settings";
+import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./core/settings";
 import { clearState, getState, patchState } from "./core/storage";
-import { ALARM_NAME, connectCalendar, runSync, scheduleNextSync } from "./core/sync-engine";
+import { ALARM_NAME, connectCalendar, runSync, scheduleNextSync, updateCalendarColor } from "./core/sync-engine";
 import { disconnectFirefoxGoogle } from "./core/firefox-oauth";
 import { disconnectBraveGoogle, isBraveBrowser } from "./core/brave-oauth";
 import { toRuntimeSafeError } from "./core/runtime-error";
 import type { LectioDiscoveryRequest, LectioDiscoveryResponse } from "./core/lectio-session";
-import type { ExtensionState, RuntimeMessage, RuntimeResponse, SyncSettings } from "./core/types";
+import {
+  MAX_SYNC_HORIZON_WEEKS,
+  MIN_SYNC_HORIZON_WEEKS,
+  type ExtensionState,
+  type RuntimeMessage,
+  type RuntimeResponse,
+  type SyncSettings
+} from "./core/types";
 
 interface RuntimeSender {
   url?: string;
@@ -94,11 +101,17 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
         if (__TARGET_BROWSER__ === "safari" && !state.lectioAccount) {
           return { ok: true, data: state };
         }
-        return { ok: true, data: await runSync() };
+        return { ok: true, data: await runSync(true) };
       }
       case "UPDATE_SETTINGS": {
         const current = await getState();
         const allowed = sanitizeSettings(message.settings, current.settings);
+        if (
+          current.googleCalendarId
+          && allowed.calendarColor !== current.settings.calendarColor
+        ) {
+          await updateCalendarColor(current.googleCalendarId, allowed.calendarColor);
+        }
         const next = await patchState({ settings: allowed });
         await scheduleNextSync(next);
         return { ok: true, data: next };
@@ -114,7 +127,12 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
         }
         const next = message.target === "lectio"
           ? await disconnectLectioAccount()
-          : await patchState({ googleCalendarId: undefined, googleCalendarName: undefined, status: "google_disconnected" });
+          : await patchState({
+            googleCalendarId: undefined,
+            googleCalendarName: undefined,
+            fullSyncThrough: undefined,
+            status: "google_disconnected"
+          });
         return { ok: true, data: next };
       }
       case "OPEN_SETTINGS":
@@ -162,11 +180,12 @@ async function connectLectioAccount(
 
 function lectioAccountHistoryReset(): Pick<
   ExtensionState,
-  "lastAttemptAt" | "lastSuccessAt" | "nextSyncAt" | "lastError" | "rotationCursor" | "sourceSnapshots"
+  "lastAttemptAt" | "lastSuccessAt" | "fullSyncThrough" | "nextSyncAt" | "lastError" | "rotationCursor" | "sourceSnapshots"
 > {
   return {
     lastAttemptAt: undefined,
     lastSuccessAt: undefined,
+    fullSyncThrough: undefined,
     nextSyncAt: undefined,
     lastError: undefined,
     rotationCursor: 0,
@@ -289,9 +308,12 @@ function lectioTabScore(rawUrl: string | undefined, schoolPrefix: string | undef
 function sanitizeSettings(input: Partial<SyncSettings>, current: SyncSettings): SyncSettings {
   return {
     intervalMinutes: sanitizeIntervalMinutes(input.intervalMinutes, current.intervalMinutes),
-    horizonWeeks: Number.isInteger(input.horizonWeeks) && Number(input.horizonWeeks) >= 2 && Number(input.horizonWeeks) <= 12
+    horizonWeeks: Number.isInteger(input.horizonWeeks)
+      && Number(input.horizonWeeks) >= MIN_SYNC_HORIZON_WEEKS
+      && Number(input.horizonWeeks) <= MAX_SYNC_HORIZON_WEEKS
       ? Number(input.horizonWeeks)
       : current.horizonWeeks,
+    calendarColor: sanitizeCalendarColor(input.calendarColor, current.calendarColor),
     cancellationMode: input.cancellationMode === "remove" ? "remove" : input.cancellationMode === "mark" ? "mark" : current.cancellationMode,
     includeHomework: typeof input.includeHomework === "boolean" ? input.includeHomework : current.includeHomework,
     includeTitle: typeof input.includeTitle === "boolean" ? input.includeTitle : current.includeTitle,

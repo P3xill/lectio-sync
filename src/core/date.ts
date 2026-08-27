@@ -37,7 +37,7 @@ export function lectioWeekValue(date: Date): string {
 
 export function getFetchWeekOffsets(initialSync: boolean, horizonWeeks: number, rotationCursor: number): number[] {
   if (initialSync) {
-    return [0, 1, 2].filter((offset) => offset <= horizonWeeks);
+    return Array.from({ length: horizonWeeks + 1 }, (_, offset) => offset);
   }
 
   const near = [0, 1, 2];

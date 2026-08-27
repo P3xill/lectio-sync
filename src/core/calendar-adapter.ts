@@ -11,7 +11,8 @@ export interface CalendarWindow {
 }
 
 export interface CalendarAdapter {
-  ensureConnected(interactive: boolean, currentCalendarId?: string): Promise<{ calendarId: string; calendarName: string }>;
+  ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }>;
+  setColor(calendarId: string, calendarColor: string): Promise<void>;
   listManaged(calendarId: string, window: CalendarWindow): Promise<ManagedCalendarEvent[]>;
   apply(calendarId: string, operations: ReconciliationOperation[]): Promise<SyncSummary>;
   disconnect(): Promise<void>;

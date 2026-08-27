@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Lectio Sync",
-  "version": "0.2.0",
-  "description": "Privately sync your Lectio timetable to your calendar.",
+  "version": "0.2.4",
+  "description": "Privately sync your Lectio timetable to Google Calendar through Apple Calendar.",
   "permissions": ["alarms", "storage", "nativeMessaging"],
   "host_permissions": ["https://www.lectio.dk/*"],
   "background": {

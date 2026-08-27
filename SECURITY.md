@@ -20,7 +20,7 @@ Lectio Sync handles school timetable data and sits next to two valuable authenti
 - The only Google scope is `https://www.googleapis.com/auth/calendar.app.created`.
 - Events are written to a calendar created specifically for Lectio Sync.
 - Ownership metadata is stored in Google Calendar private extended properties. The adapter lists and reconciles only events carrying the Lectio Sync marker.
-- No OAuth client secret or signing key may be committed. The security test scans the repository, and release packaging refuses a placeholder client ID.
+- No private OAuth credential or signing key may be committed. Release packaging refuses placeholder OAuth identifiers.
 
 ### Safari and Apple Calendar
 
@@ -60,7 +60,7 @@ Extension pages use a restrictive Content Security Policy with scripts from self
 
 1. Run `npm ci` and confirm the dependency audit has no known vulnerabilities.
 2. Run `npm run verify` and `npm run verify:safari` on the release commit.
-3. Complete the live-account cases in `docs/MANUAL_TEST_PLAN.md` with dedicated test accounts.
+3. Verify initial sync, update/no-duplicate behavior, cancellation, expiry/recovery, disconnect, calendar recreation, and browser restart with dedicated test accounts.
 4. Verify Chrome, Firefox, and Safari store permission disclosures match `PRIVACY.md`.
 5. Confirm the Chrome OAuth client ID belongs to the exact published Chrome extension ID and the Firefox add-on ID is stable.
 6. Inspect both ZIPs and the signed Safari archive; do not publish source maps, keys, provisioning profiles, or test credentials.

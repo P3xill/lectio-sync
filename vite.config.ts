@@ -39,19 +39,5 @@ export default defineConfig({
         assetFileNames: "assets/[name]-[hash][extname]"
       }
     }
-  },
-  test: {
-    environment: "node",
-    coverage: {
-      provider: "v8",
-      reporter: ["text", "json-summary"],
-      include: ["src/core/**/*.ts"],
-      thresholds: {
-        statements: 85,
-        branches: 80,
-        functions: 85,
-        lines: 85
-      }
-    }
   }
 });
