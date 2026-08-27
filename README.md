@@ -149,7 +149,7 @@ Removing that limitation would require an always-on backend. Because an unattend
 - `manifests/` — least-privilege Chrome, Firefox, and Safari Manifest V3 templates.
 - `safari-native/` — reviewed EventKit bridge copied into the generated Xcode project.
 
-See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) before publishing.
+See [PRIVACY.md](PRIVACY.md) before publishing.
 
 ## Reference documentation
 

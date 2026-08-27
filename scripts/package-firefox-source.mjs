@@ -6,11 +6,9 @@ const artifacts = resolve("artifacts");
 const archive = resolve(artifacts, "lectio-sync-firefox-source.zip");
 const temporaryArchive = resolve(artifacts, "lectio-sync-firefox-source.zip.tmp");
 const sourcePaths = [
-  ".env.example",
   "LICENSE",
   "PRIVACY.md",
   "README.md",
-  "SECURITY.md",
   "manifests",
   "package-lock.json",
   "package.json",
