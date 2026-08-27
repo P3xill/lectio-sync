@@ -8,12 +8,12 @@ const temporaryArchive = resolve(artifacts, "lectio-sync-chrome.zip.tmp");
 
 const manifest = await readFile(resolve("dist/chrome/manifest.json"), "utf8");
 if (manifest.includes("REPLACE_WITH_CHROME_EXTENSION_OAUTH_CLIENT_ID")) {
-  throw new Error("Set GOOGLE_OAUTH_CLIENT_ID before creating a release package. See .env.example.");
+  throw new Error("Set GOOGLE_OAUTH_CLIENT_ID before creating a release package. See README.md.");
 }
 
 const background = await readFile(resolve("dist/chrome/background.js"), "utf8");
 if (background.includes("REPLACE_WITH_BRAVE_WEB_OAUTH_CLIENT_ID")) {
-  throw new Error("Set GOOGLE_BRAVE_OAUTH_CLIENT_ID before creating a release package. See .env.example.");
+  throw new Error("Set GOOGLE_BRAVE_OAUTH_CLIENT_ID before creating a release package. See README.md.");
 }
 
 await mkdir(artifacts, { recursive: true });
