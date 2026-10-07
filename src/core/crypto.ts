@@ -1,7 +1,10 @@
 const BASE32_HEX = "0123456789abcdefghijklmnopqrstuv";
+const encoder = new TextEncoder();
+const MAX_CACHED_EVENT_IDS = 2_000;
+const eventIds = new Map<string, string>();
 
 export async function sha256(input: string): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
   return new Uint8Array(digest);
 }
 
@@ -23,8 +26,16 @@ export function base32Hex(bytes: Uint8Array): string {
 }
 
 export async function stableGoogleEventId(schoolId: string, studentId: string, sourceId: string): Promise<string> {
-  const digest = await sha256(`${schoolId}:${studentId}:${sourceId}`);
-  return `1ec710${base32Hex(digest).slice(0, 40)}`;
+  // IDs are immutable for this exact account/source tuple. Cache only these
+  // hashes in memory; event fingerprints must always reflect fresh contents.
+  const key = `${schoolId}:${studentId}:${sourceId}`;
+  const cached = eventIds.get(key);
+  if (cached) return cached;
+  const digest = await sha256(key);
+  const id = `1ec710${base32Hex(digest).slice(0, 40)}`;
+  if (eventIds.size >= MAX_CACHED_EVENT_IDS) eventIds.clear();
+  eventIds.set(key, id);
+  return id;
 }
 
 export async function fingerprint(value: unknown): Promise<string> {

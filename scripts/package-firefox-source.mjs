@@ -8,12 +8,16 @@ const temporaryArchive = resolve(artifacts, "lectio-sync-firefox-source.zip.tmp"
 const sourcePaths = [
   "LICENSE",
   "PRIVACY.md",
+  "SECURITY.md",
+  "PERFORMANCE.md",
   "README.md",
   "manifests",
   "package-lock.json",
   "package.json",
   "public",
   "scripts",
+  "safari-native",
+  "tests",
   "src",
   "tsconfig.json",
   "vite.config.ts"

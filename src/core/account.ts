@@ -18,11 +18,12 @@ export function studentIdFromDocument(document: Document): string | undefined {
   const schoolId = schoolIdFromUrl(document.baseURI);
   if (!schoolId) return undefined;
   const schoolPath = `/lectio/${schoolId}/`;
-  const candidates = [document.baseURI, ...Array.from(
-    document.querySelectorAll<HTMLAnchorElement>("a[href]"),
-    (anchor) => anchor.href
-  )];
-  for (const candidate of candidates) {
+  // Check the current URL before materializing or resolving all page links.
+  function* candidates(): Generator<string> {
+    yield document.baseURI;
+    for (const anchor of document.querySelectorAll<HTMLAnchorElement>("a[href]")) yield anchor.href;
+  }
+  for (const candidate of candidates()) {
     try {
       const url = new URL(candidate, document.baseURI);
       const studentId = Array.from(url.searchParams.entries())

@@ -126,6 +126,7 @@ export const MAX_SYNC_HORIZON_WEEKS = 12;
 
 export type RuntimeMessage =
   | { type: "GET_STATE" }
+  | { type: "GET_POPUP_STATE" }
   | { type: "START_LECTIO_SETUP" }
   | { type: "LECTIO_PAGE_SEEN"; url: string; studentId?: string; schoolName?: string }
   | { type: "CONNECT_GOOGLE" }

@@ -1,16 +1,17 @@
 import browser from "webextension-polyfill";
 import { addWeeks, getFetchWeekOffsets, getIsoWeek, lectioWeekValue } from "./date";
-import { parseLectioActivityDetails, parseLectioSchedule } from "./parser";
+import { mapConcurrent } from "./concurrency";
 import { toCalendarEvent } from "./calendar-event";
 import { reconcileEvents } from "./reconcile";
 import { GoogleApiError, GoogleCalendarAdapter } from "./google-calendar";
 import { SafariCalendarAdapter } from "./safari-calendar";
 import {
-  fetchLectioPage,
+  createLectioPageFetcher,
+  type LectioPageFetcher,
   LectioPageTooLargeError,
   LectioSessionTabError
 } from "./lectio-session";
-import { getState, patchState } from "./storage";
+import { getState, getStateSummary, patchState } from "./storage";
 import type {
   CalendarEventInput,
   ExtensionState,
@@ -85,7 +86,7 @@ function staleSyncError(calendarMayHaveChanged: boolean): StaleSyncError {
 }
 
 async function assertSyncIdentity(expected: SyncIdentity, calendarMayHaveChanged: boolean): Promise<void> {
-  if (!hasSyncIdentity(await getState(), expected)) {
+  if (!hasSyncIdentity(await getStateSummary(), expected)) {
     throw staleSyncError(calendarMayHaveChanged);
   }
 }
@@ -130,7 +131,7 @@ function weekWindow(baseMonday: Date, offsets: number[]) {
   };
 }
 
-async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: Date): Promise<LectioEvent[]> {
+async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: Date, fetchLectioPage: LectioPageFetcher): Promise<LectioEvent[]> {
   const params = new URLSearchParams({
     type: "elev",
     elevid: studentId,
@@ -159,6 +160,8 @@ async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: 
     }
 
     try {
+      // parse5 is substantial; initialize it only when a sync has HTML to parse.
+      const { parseLectioSchedule } = await import("./parser");
       return parseLectioSchedule(response.html, response.url).events;
     } catch (error) {
       if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
@@ -194,7 +197,7 @@ function trustedActivityUrl(rawUrl: string | undefined, schoolId: string, source
   }
 }
 
-async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promise<LectioEvent> {
+async function fetchActivityDetails(event: LectioEvent, schoolId: string, fetchLectioPage: LectioPageFetcher): Promise<LectioEvent> {
   if (!event.sourceId.startsWith("absid:")) return event;
   const url = trustedActivityUrl(event.sourceUrl, schoolId, event.sourceId);
   if (!url) return event;
@@ -220,6 +223,7 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
   }
 
   try {
+    const { parseLectioActivityDetails } = await import("./parser");
     const details = parseLectioActivityDetails(response.html, response.url || url);
     return {
       ...event,
@@ -234,17 +238,8 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string): Promi
   }
 }
 
-async function enrichActivityDetails(events: LectioEvent[], schoolId: string): Promise<LectioEvent[]> {
-  const enriched = [...events];
-  let cursor = 0;
-  const workerCount = Math.min(8, events.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (cursor < events.length) {
-      const index = cursor++;
-      enriched[index] = await fetchActivityDetails(events[index]!, schoolId);
-    }
-  }));
-  return enriched;
+async function enrichActivityDetails(events: LectioEvent[], schoolId: string, fetchLectioPage: LectioPageFetcher): Promise<LectioEvent[]> {
+  return mapConcurrent(events, 8, (event) => fetchActivityDetails(event, schoolId, fetchLectioPage));
 }
 
 async function notifyError(error: SafeError): Promise<void> {
@@ -287,7 +282,7 @@ async function notifyCancellations(events: CalendarEventInput[]): Promise<void> 
 
 function errorFromUnknown(error: unknown): SafeError {
   if (error instanceof GoogleApiError && error.status === 401) {
-    return makeSafeError("GOOGLE_AUTH_REQUIRED", "Reconnect Google Calendar.", error.message);
+    return makeSafeError("GOOGLE_AUTH_REQUIRED", error.message, error.technicalDetail);
   }
   if (error instanceof GoogleApiError) {
     return makeSafeError("GOOGLE_API", "Google Calendar could not be updated.", error.message);
@@ -376,24 +371,25 @@ async function performSync(fullHorizon = false): Promise<SyncSummary> {
       state.settings.horizonWeeks,
       state.rotationCursor
     );
-    const desiredSource: LectioEvent[] = [];
-    for (const offset of offsets) {
-      desiredSource.push(...await fetchScheduleWeek(
-        lectioAccount.schoolId,
-        lectioAccount.studentId,
-        addWeeks(baseMonday, offset)
-      ));
-    }
+    const fetchLectioPage = createLectioPageFetcher();
+    const weeks = await mapConcurrent(offsets, 4, (offset) => fetchScheduleWeek(
+      lectioAccount.schoolId,
+      lectioAccount.studentId,
+      addWeeks(baseMonday, offset),
+      fetchLectioPage
+    ));
+    const desiredSource = weeks.flat();
 
     const uniqueDesiredSource = [...new Map(desiredSource.map((event) => [event.sourceId, event])).values()];
     if (uniqueDesiredSource.length > MAX_EVENTS_PER_SYNC) {
       throw makeSafeError("LECTIO_UNEXPECTED_PAGE", "Lectio returned too many events in one synchronization.");
     }
-    const enrichedSource = await enrichActivityDetails(uniqueDesiredSource, lectioAccount.schoolId);
-    const calendarSource: CalendarEventInput[] = [];
-    for (const event of enrichedSource) {
-      calendarSource.push(await toCalendarEvent(event, lectioAccount, state.settings));
-    }
+    const enrichedSource = state.settings.includeTitle || state.settings.includeDescription
+      ? await enrichActivityDetails(uniqueDesiredSource, lectioAccount.schoolId, fetchLectioPage)
+      : uniqueDesiredSource;
+    const calendarSource = await mapConcurrent(enrichedSource, 16, (event) =>
+      toCalendarEvent(event, lectioAccount, state.settings)
+    );
     const newlyCancelled = calendarSource.filter((event) =>
       isNewCancellation(event, state.sourceSnapshots[event.sourceId], Boolean(state.lastSuccessAt))
     );
@@ -402,11 +398,10 @@ async function performSync(fullHorizon = false): Promise<SyncSummary> {
       : calendarSource;
 
     const listExisting = async (calendarId: string) => {
-      const events = [];
-      for (const group of groupConsecutive(offsets)) {
-        events.push(...await adapter.listManaged(calendarId, weekWindow(baseMonday, group)));
-      }
-      return events;
+      const groups = await mapConcurrent(groupConsecutive(offsets), 2, (group) =>
+        adapter.listManaged(calendarId, weekWindow(baseMonday, group))
+      );
+      return groups.flat();
     };
 
     let existing;

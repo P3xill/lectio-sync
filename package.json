@@ -1,6 +1,6 @@
 {
   "name": "lectio-sync",
-  "version": "0.2.4",
+  "version": "0.3.1",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -14,12 +14,13 @@
     "build:firefox": "node scripts/build-extension.mjs firefox && node scripts/build-manifest.mjs firefox",
     "build:safari": "node scripts/build-extension.mjs safari && node scripts/build-manifest.mjs safari",
     "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "package:chrome": "npm run build:chrome && node scripts/package-chrome.mjs",
     "package:firefox": "npm run build:firefox && node scripts/package-firefox.mjs",
     "package:firefox-source": "node scripts/package-firefox-source.mjs",
     "convert:safari": "npm run build:safari && node scripts/convert-safari.mjs",
     "install:safari-dev": "node scripts/install-safari-dev.mjs",
-    "verify": "npm run check && npm run build",
+    "verify": "npm run check && npm test && npm run build",
     "verify:safari": "npm run convert:safari && xcodebuild -project 'Safari/Lectio Sync/Lectio Sync.xcodeproj' -scheme 'Lectio Sync (macOS)' -configuration Debug -derivedDataPath .build/xcode-macos CODE_SIGNING_ALLOWED=NO build"
   },
   "dependencies": {

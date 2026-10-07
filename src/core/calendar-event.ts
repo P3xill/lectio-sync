@@ -29,11 +29,15 @@ export async function toCalendarEvent(
     timeZone: COPENHAGEN_TIME_ZONE
   };
 
+  const [id, eventFingerprint] = await Promise.all([
+    stableGoogleEventId(account.schoolId, account.studentId, source.sourceId),
+    fingerprint(comparable)
+  ]);
   return {
-    id: await stableGoogleEventId(account.schoolId, account.studentId, source.sourceId),
+    id,
     ...comparable,
     sourceId: source.sourceId,
-    fingerprint: await fingerprint(comparable),
+    fingerprint: eventFingerprint,
     lectioStatus: source.status
   };
 }

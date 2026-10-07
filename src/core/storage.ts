@@ -153,10 +153,18 @@ function validSourceId(value: string): boolean {
 function sanitizeSnapshots(value: unknown): Record<string, SourceSnapshotState> {
   if (!isRecord(value)) return {};
   const entries: Array<[string, SourceSnapshotState]> = [];
+  const timestamps = new Map<string, string | undefined>();
+  const snapshotTimestamp = (value: unknown): string | undefined => {
+    if (typeof value !== "string" || value.length > MAX_TIMESTAMP_LENGTH) return undefined;
+    if (timestamps.has(value)) return timestamps.get(value);
+    const validated = validTimestamp(value);
+    if (timestamps.size < MAX_STORED_SNAPSHOTS) timestamps.set(value, validated);
+    return validated;
+  };
   for (const [sourceId, candidate] of Object.entries(value)) {
     if (!validSourceId(sourceId) || !isRecord(candidate)) continue;
     const fingerprint = boundedIdentifier(candidate.fingerprint, MAX_FINGERPRINT_LENGTH);
-    const lastSeenAt = validTimestamp(candidate.lastSeenAt);
+    const lastSeenAt = snapshotTimestamp(candidate.lastSeenAt);
     if (!fingerprint || !lastSeenAt) continue;
     const missingStreak = candidate.missingStreak === 0 || candidate.missingStreak === 1
       ? candidate.missingStreak
@@ -173,11 +181,14 @@ function sanitizeSnapshots(value: unknown): Record<string, SourceSnapshotState> 
       ...(lectioStatus ? { lectioStatus } : {})
     }]);
   }
-  entries.sort((left, right) => Date.parse(right[1].lastSeenAt) - Date.parse(left[1].lastSeenAt));
+  if (entries.length > MAX_STORED_SNAPSHOTS) {
+    const timestamps = new Map(entries.map(([id, snapshot]) => [id, Date.parse(snapshot.lastSeenAt)]));
+    entries.sort((left, right) => timestamps.get(right[0])! - timestamps.get(left[0])!);
+  }
   return Object.fromEntries(entries.slice(0, MAX_STORED_SNAPSHOTS));
 }
 
-function sanitizeState(value: unknown): ExtensionState {
+function sanitizeState(value: unknown, trustedSnapshots?: Record<string, SourceSnapshotState>): ExtensionState {
   const stored = isRecord(value) ? value : {};
   const lastAttemptAt = validTimestamp(stored.lastAttemptAt);
   const lastSuccessAt = validTimestamp(stored.lastSuccessAt);
@@ -200,7 +211,7 @@ function sanitizeState(value: unknown): ExtensionState {
     status,
     rotationCursor,
     settings: sanitizeSettings(stored.settings),
-    sourceSnapshots: sanitizeSnapshots(stored.sourceSnapshots),
+    sourceSnapshots: trustedSnapshots ?? sanitizeSnapshots(stored.sourceSnapshots),
     ...(lectioAccount ? { lectioAccount } : {}),
     ...(googleCalendarId ? { googleCalendarId } : {}),
     ...(googleCalendarId && googleCalendarName ? { googleCalendarName } : {}),
@@ -212,9 +223,29 @@ function sanitizeState(value: unknown): ExtensionState {
   };
 }
 
-export async function getState(): Promise<ExtensionState> {
-  const stored = await browser.storage.local.get(STATE_KEY);
-  return sanitizeState(stored[STATE_KEY]);
+async function readState(includeSnapshots: boolean): Promise<ExtensionState> {
+  // Remove obsolete pairing data when upgrading to the standalone extension.
+  const credentialKey = "lectioSyncNativeBridgeCredentialV1";
+  const stored = await browser.storage.local.get([STATE_KEY, credentialKey]);
+  const rawState = stored[STATE_KEY];
+  const state = sanitizeState(rawState, includeSnapshots ? undefined : {});
+  if (isRecord(rawState) && [
+    "nativeBridgeMode", "nativeBridgePaired", "nativeAppAvailable",
+    "isMacOS", "nativePromotionDismissedAt"
+  ].some((key) => key in rawState)) {
+    await browser.storage.local.set({ [STATE_KEY]: includeSnapshots ? state : sanitizeState(rawState) });
+  }
+  if (credentialKey in stored) await browser.storage.local.remove(credentialKey);
+  return state;
+}
+
+export function getState(): Promise<ExtensionState> {
+  return readState(true);
+}
+
+/** Popup/identity checks never use reconciliation snapshots. */
+export function getStateSummary(): Promise<ExtensionState> {
+  return readState(false);
 }
 
 export async function setState(state: ExtensionState): Promise<void> {
@@ -229,8 +260,10 @@ export async function patchState(patch: Partial<ExtensionState>): Promise<Extens
     settings: patch.settings ? { ...current.settings, ...patch.settings } : current.settings,
     sourceSnapshots: patch.sourceSnapshots ?? current.sourceSnapshots
   };
-  const sanitized = sanitizeState(next);
-  await setState(sanitized);
+  // getState already validated unchanged snapshots. Revalidate only a supplied
+  // replacement; avoid scanning thousands of entries for a status/settings patch.
+  const sanitized = sanitizeState(next, patch.sourceSnapshots === undefined ? current.sourceSnapshots : undefined);
+  await browser.storage.local.set({ [STATE_KEY]: sanitized });
   return sanitized;
 }
 

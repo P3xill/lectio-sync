@@ -30,7 +30,7 @@ browser.runtime.onMessage.addListener((value: unknown) => {
   }
 
   const request = parseLectioPageRequest(value, location.href);
-  if (!request || __TARGET_BROWSER__ !== "safari") return undefined;
+  if (!request) return undefined;
 
   return fetch(request.url, {
     method: "GET",

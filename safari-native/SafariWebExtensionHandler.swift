@@ -4,6 +4,7 @@ import Foundation
 import SafariServices
 
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
+    private static let calendarCreationLock = NSLock()
     private let eventStore = EKEventStore()
     private let calendarName = "Lectio"
     private let markerScheme = "lectiosync"
@@ -27,7 +28,10 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 switch result {
                 case .success:
                     do {
-                        let calendar = try self.ensureCalendar(colorHex: calendarColor)
+                        let calendar = try self.ensureCalendar(
+                            currentIdentifier: message["currentCalendarId"] as? String,
+                            interactive: interactive, colorHex: calendarColor
+                        )
                         self.complete(context, data: [
                             "calendarId": calendar.calendarIdentifier,
                             "calendarName": calendar.title
@@ -154,14 +158,20 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         return status == .authorized
     }
 
-    private func ensureCalendar(colorHex: String?) throws -> EKCalendar {
+    private func ensureCalendar(currentIdentifier: String?, interactive: Bool, colorHex: String?) throws -> EKCalendar {
+        Self.calendarCreationLock.lock()
+        defer { Self.calendarCreationLock.unlock() }
+        eventStore.refreshSourcesIfNecessary()
         let desiredColor = colorHex.flatMap(calendarColor(from:))
-        if let ownedIdentifier = UserDefaults.standard.string(forKey: ownedCalendarIdentifierKey) {
-            if let owned = ownedCalendar(withIdentifier: ownedIdentifier) {
-                try apply(desiredColor, to: owned)
-                return owned
+        let storedIdentifier = UserDefaults.standard.string(forKey: ownedCalendarIdentifierKey)
+        for identifier in [storedIdentifier, currentIdentifier].compactMap({ $0 }) {
+            if let calendar = eventStore.calendar(withIdentifier: identifier),
+               calendar.title == calendarName, isGoogleSource(calendar.source),
+               calendar.allowsContentModifications, !calendar.isSubscribed {
+                UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+                try apply(desiredColor, to: calendar)
+                return calendar
             }
-            UserDefaults.standard.removeObject(forKey: ownedCalendarIdentifierKey)
         }
 
         let sourceIdentifiers = preferredGoogleSourceIdentifiers()
@@ -169,35 +179,39 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             throw BridgeError("No Google Calendar account was found. Add Google in System Settings › Internet Accounts, then try again.")
         }
 
-        // EventKit doesn't guarantee source order, and a Google account can expose
-        // read-only/delegated CalDAV sources alongside the writable primary source.
+        // Search every Google source before creating anything in the first one.
+        let existing = eventStore.calendars(for: .event).filter {
+            sourceIdentifiers.contains($0.source.sourceIdentifier)
+                && $0.title == calendarName && $0.allowsContentModifications && !$0.isSubscribed
+        }
+        guard existing.count <= 1 else {
+            throw BridgeError("Multiple Lectio calendars were found under Google. Keep the calendar containing your timetable and resolve the duplicates before reconnecting.")
+        }
+        if let calendar = existing.first {
+            UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
+            try apply(desiredColor, to: calendar)
+            return calendar
+        }
+        // A missing EventKit identifier may be temporary or changed by a full
+        // account sync. Background sync and colour changes must not create replacements.
+        guard interactive || (storedIdentifier == nil && currentIdentifier == nil) else {
+            throw BridgeError("The saved Lectio calendar is temporarily unavailable. Refresh Apple Calendar and reconnect Lectio Sync before creating a replacement.")
+        }
+
         for sourceIdentifier in sourceIdentifiers {
             guard let source = eventStore.source(withIdentifier: sourceIdentifier) else { continue }
-
-            if let existing = source.calendars(for: .event).first(where: {
-                $0.title == calendarName && $0.allowsContentModifications && !$0.isSubscribed
-            }) {
-                try apply(desiredColor, to: existing)
-                UserDefaults.standard.set(existing.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
-                return existing
-            }
-
             let calendar = EKCalendar(for: .event, eventStore: eventStore)
             calendar.title = calendarName
             calendar.source = source
-            if #available(macOS 10.15, *), let desiredColor {
-                calendar.cgColor = desiredColor
-            }
+            if #available(macOS 10.15, *), let desiredColor { calendar.cgColor = desiredColor }
             do {
                 try eventStore.saveCalendar(calendar, commit: true)
                 UserDefaults.standard.set(calendar.calendarIdentifier, forKey: ownedCalendarIdentifierKey)
                 return calendar
             } catch {
-                // Revert this failed candidate before trying the next Google source.
                 eventStore.reset()
             }
         }
-
         throw BridgeError("Apple Calendar found your Google account, but none of its sources allow a Lectio calendar to be created. In Apple Calendar, create a calendar named ‘Lectio’ under Google, then try again.")
     }
 
@@ -327,7 +341,9 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 }
             }
 
-            try eventStore.commit()
+            if inserted + updated + deleted > 0 {
+                try eventStore.commit()
+            }
         } catch {
             eventStore.reset()
             throw error
@@ -372,21 +388,31 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         event.url = markerURL(sourceId: sourceId, fingerprint: fingerprint)
     }
 
-    private func parseInstant(_ value: String) -> Date? {
+    private let fractionalInstantFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-    }
-
-    private func parseLectioDate(_ value: String) -> Date? {
-        if let instant = parseInstant(value) { return instant }
+        return formatter
+    }()
+    private let instantFormatter = ISO8601DateFormatter()
+    private let lectioDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = TimeZone(identifier: "Europe/Copenhagen")
         formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         formatter.isLenient = false
-        return formatter.date(from: value)
+        return formatter
+    }()
+
+    private func parseInstant(_ value: String) -> Date? {
+        fractionalInstantFormatter.date(from: value) ?? instantFormatter.date(from: value)
+    }
+
+    private func parseLectioDate(_ value: String) -> Date? {
+        // Schedule dates use exactly this local format. Avoid two failed ISO
+        // parses for each start/end while retaining support for absolute dates.
+        if value.utf8.count == 19 { return lectioDateFormatter.date(from: value) }
+        return parseInstant(value) ?? lectioDateFormatter.date(from: value)
     }
 
     private func markerURL(sourceId: String, fingerprint: String) -> URL? {
