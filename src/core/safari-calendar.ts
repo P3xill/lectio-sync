@@ -37,6 +37,12 @@ export class SafariCalendarAdapter implements CalendarAdapter {
   }
 
   apply(calendarId: string, operations: ReconciliationOperation[]): Promise<SyncSummary> {
+    if (operations.every((operation) => operation.kind === "noop")) {
+      return Promise.resolve({
+        inserted: 0, updated: 0, deleted: 0, unchanged: operations.length,
+        fetched: operations.length, completedAt: new Date().toISOString()
+      });
+    }
     return this.send("APPLY_OPERATIONS", { calendarId, operations });
   }
 

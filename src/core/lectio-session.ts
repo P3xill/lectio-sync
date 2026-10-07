@@ -43,6 +43,21 @@ export class LectioSessionTabError extends Error {
   }
 }
 
+export function isSupportedLectioFetchUrl(rawUrl: string, schoolId: string): boolean {
+  if (rawUrl.length > 2_048) return false;
+  try {
+    const url = new URL(rawUrl);
+    if (url.username || url.password || url.hash) return false;
+    const path = url.pathname.toLowerCase();
+    return schoolIdFromUrl(rawUrl) === schoolId && (
+      path === `/lectio/${schoolId}/skemany.aspx`
+      || path === `/lectio/${schoolId}/aktivitet/aktivitetinfo2.aspx`
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function parseLectioPageRequest(value: unknown, currentPageUrl: string): LectioPageRequest | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const message = value as Record<string, unknown>;
@@ -54,9 +69,16 @@ export function parseLectioPageRequest(value: unknown, currentPageUrl: string): 
   ) return undefined;
 
   const currentSchoolId = schoolIdFromUrl(currentPageUrl);
-  const requestedSchoolId = schoolIdFromUrl(message.url);
-  if (!currentSchoolId || currentSchoolId !== requestedSchoolId) return undefined;
+  if (!currentSchoolId || !isSupportedLectioFetchUrl(message.url, currentSchoolId)) return undefined;
   return { type: "LECTIO_FETCH_PAGE", url: message.url, cache: message.cache };
+}
+
+function withinResponseLimit(text: string): boolean {
+  // A UTF-16 code unit needs at most three UTF-8 bytes. Most pages can be
+  // validated without allocating another full encoded copy.
+  if (text.length > MAX_LECTIO_RESPONSE_BYTES) return false;
+  return text.length <= Math.floor(MAX_LECTIO_RESPONSE_BYTES / 3)
+    || new TextEncoder().encode(text).byteLength <= MAX_LECTIO_RESPONSE_BYTES;
 }
 
 export async function readLimitedLectioText(response: Response): Promise<string> {
@@ -67,7 +89,7 @@ export async function readLimitedLectioText(response: Response): Promise<string>
 
   if (!response.body) {
     const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > MAX_LECTIO_RESPONSE_BYTES) {
+    if (!withinResponseLimit(text)) {
       throw new LectioPageTooLargeError();
     }
     return text;
@@ -119,33 +141,67 @@ function isLectioPageResponse(value: unknown, schoolId: string): value is Lectio
   const validFinalUrl = response.status === 0 || schoolIdFromUrl(response.url as string) === schoolId;
   return validType
     && validFinalUrl
-    && new TextEncoder().encode(response.html).byteLength <= MAX_LECTIO_RESPONSE_BYTES;
+    && withinResponseLimit(response.html);
 }
 
-export async function fetchLectioPageViaTab(
-  url: string,
-  cache: LectioCacheMode
-): Promise<LectioPageResponse> {
-  const schoolId = schoolIdFromUrl(url);
-  if (!schoolId) throw new LectioSessionTabError("Safari rejected an invalid Lectio URL.");
+export type LectioPageFetcher = (url: string, cache: LectioCacheMode) => Promise<LectioPageResponse>;
 
-  const tabs = await browser.tabs.query({});
-  const candidates = tabs.filter((tab) => tab.id !== undefined && tab.url && schoolIdFromUrl(tab.url) === schoolId);
-  if (candidates.length === 0) throw new LectioSessionTabError();
+/** Reuse tab discovery within one sync, never page responses or login state. */
+export function createLectioPageFetcher(): LectioPageFetcher {
+  if (__TARGET_BROWSER__ !== "safari") return fetchLectioPage;
+  return createTabPageFetcher();
+}
 
-  for (const tab of candidates) {
-    try {
-      const response = await browser.tabs.sendMessage(tab.id!, {
-        type: "LECTIO_FETCH_PAGE",
-        url,
-        cache
+function createTabPageFetcher(): LectioPageFetcher {
+  let tabsRequest: ReturnType<typeof browser.tabs.query> | undefined;
+  const preferredTabs = new Map<string, number>();
+  return async (url, cache) => {
+    const schoolId = schoolIdFromUrl(url);
+    if (!schoolId) throw new LectioSessionTabError("Safari rejected an invalid Lectio URL.");
+    const send = async (tabId: number) => {
+      const response = await browser.tabs.sendMessage(tabId, {
+        type: "LECTIO_FETCH_PAGE", url, cache
       } satisfies LectioPageRequest);
-      if (isLectioPageResponse(response, schoolId)) return response;
-    } catch {
-      // Try another matching Lectio tab; an older tab may not have the content script loaded.
+      return isLectioPageResponse(response, schoolId) ? response : undefined;
+    };
+    const preferred = preferredTabs.get(schoolId);
+    if (preferred !== undefined) {
+      try {
+        const response = await send(preferred);
+        if (response) return response;
+      } catch {
+        // Refresh discovery if the previously working tab closed or navigated.
+      }
+      preferredTabs.delete(schoolId);
+      tabsRequest = undefined;
     }
-  }
-  throw new LectioSessionTabError();
+    const discovery = tabsRequest ??= browser.tabs.query({});
+    let tabs;
+    try {
+      tabs = await discovery;
+    } catch (error) {
+      if (tabsRequest === discovery) tabsRequest = undefined;
+      throw error;
+    }
+    for (const tab of tabs) {
+      if (tab.id === undefined || tab.id === preferred || !tab.url || schoolIdFromUrl(tab.url) !== schoolId) continue;
+      try {
+        const response = await send(tab.id);
+        if (response) {
+          preferredTabs.set(schoolId, tab.id);
+          return response;
+        }
+      } catch {
+        // An older tab may not have the content script loaded.
+      }
+    }
+    if (tabsRequest === discovery) tabsRequest = undefined;
+    throw new LectioSessionTabError();
+  };
+}
+
+export async function fetchLectioPageViaTab(url: string, cache: LectioCacheMode): Promise<LectioPageResponse> {
+  return createTabPageFetcher()(url, cache);
 }
 
 export async function fetchLectioPage(url: string, cache: LectioCacheMode): Promise<LectioPageResponse> {

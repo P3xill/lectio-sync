@@ -66,7 +66,7 @@ function previewState(): ExtensionState {
 async function send<T = unknown>(message: RuntimeMessage): Promise<T> {
   if (isPreview()) {
     await new Promise((resolve) => setTimeout(resolve, 250));
-    if (message.type === "GET_STATE") return previewState() as T;
+    if (message.type === "GET_POPUP_STATE") return previewState() as T;
     if (message.type === "START_LECTIO_SETUP") return state as T;
     if (message.type === "UPDATE_SETTINGS") {
       state = { ...state, settings: { ...state.settings, ...message.settings } };
@@ -97,8 +97,8 @@ function node<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-function icon(kind: "calendar" | "check" | "warning" | "lock" | "clock" | "arrow" | "settings"): SVGSVGElement {
-  const paths: Record<typeof kind, string> = {
+type IconKind = "calendar" | "check" | "warning" | "lock" | "clock" | "arrow" | "settings";
+const iconPaths: Record<IconKind, string> = {
     calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/>',
     check: '<path d="m5 12 4 4L19 6"/>',
     warning: '<path d="M10.3 3.8 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
@@ -107,17 +107,24 @@ function icon(kind: "calendar" | "check" | "warning" | "lock" | "clock" | "arrow
     arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
   };
+
+const iconTemplates = new Map<IconKind, SVGSVGElement>();
+
+function icon(kind: IconKind): SVGSVGElement {
+  const cached = iconTemplates.get(kind);
+  if (cached) return cached.cloneNode(true) as SVGSVGElement;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
   const parsed = new DOMParser().parseFromString(
-    `<svg xmlns="http://www.w3.org/2000/svg">${paths[kind]}</svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg">${iconPaths[kind]}</svg>`,
     "image/svg+xml"
   );
   for (const child of Array.from(parsed.documentElement.children)) {
     svg.append(document.importNode(child, true));
   }
-  return svg;
+  iconTemplates.set(kind, svg);
+  return svg.cloneNode(true) as SVGSVGElement;
 }
 
 function setView(nextView: View, focusSelector = "h1"): void {
@@ -142,8 +149,9 @@ function focusPendingTarget(): void {
   target.focus({ preventScroll: true });
 }
 
-function header(title = "Lectio Sync", back = false): HTMLElement {
+function header(title = "Lectio Sync", back = false, showMenu = true): HTMLElement {
   const left = node("div", { className: "brand" }, icon("calendar"), node("span", { text: title }));
+  if (!back && !showMenu) return node("header", { className: "app-header" }, left);
   const action = back
     ? node("button", {
       className: "button quiet icon-button",
@@ -156,6 +164,11 @@ function header(title = "Lectio Sync", back = false): HTMLElement {
     render();
   });
   return node("header", { className: "app-header" }, left, action);
+}
+
+async function openExternal(url: string): Promise<void> {
+  browserApi ??= (await import("webextension-polyfill")).default;
+  await browserApi.tabs.create({ url, active: true });
 }
 
 function actionButton(label: string, className: string, handler: () => void | Promise<void>, leading?: string): HTMLButtonElement {
@@ -260,7 +273,7 @@ function setupView(): HTMLElement {
       try {
         await send({ type: "SYNC_NOW" });
       } finally {
-        state = await send<ExtensionState>({ type: "GET_STATE" });
+        state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
       }
     });
   }
@@ -287,7 +300,7 @@ function healthyView(): HTMLElement {
       try {
         await send({ type: "SYNC_NOW" });
       } finally {
-        state = await send<ExtensionState>({ type: "GET_STATE" });
+        state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
       }
     }),
     settingsAction
@@ -319,7 +332,7 @@ function recoveryView(expired: boolean): HTMLElement {
   const secondaryAction = actionButton(expired ? "Check again" : "View details", "secondary full", async () => {
     if (expired) {
       await send({ type: "CHECK_LECTIO" });
-      state = await send<ExtensionState>({ type: "GET_STATE" });
+      state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
     } else {
       openSubView("details", detailsActionFocusSelector);
     }
@@ -338,7 +351,7 @@ function recoveryView(expired: boolean): HTMLElement {
           try {
             await send({ type: "SYNC_NOW" });
           } finally {
-            state = await send<ExtensionState>({ type: "GET_STATE" });
+            state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
           }
         }
       }),
@@ -484,11 +497,12 @@ function detailsView(): HTMLElement {
       node("dt", { text: "When" }), node("dd", { text: error ? formatDisplayDateTime(new Date(error.occurredAt)) : "Unknown" }),
       node("dt", { text: "Technical detail" }), node("dd", { text: error?.technicalDetail ?? error?.message ?? "No details available." })
     ),
-    actionButton("Try again", "primary full", async () => {
+    actionButton(error?.code === "GOOGLE_AUTH_REQUIRED" ? `Reconnect ${calendarStatusLabel}` : "Try again", "primary full", async () => {
       try {
-        await send({ type: "SYNC_NOW" });
+        if (error?.code === "GOOGLE_AUTH_REQUIRED") await send({ type: "CONNECT_GOOGLE" });
+        else await send({ type: "SYNC_NOW" });
       } finally {
-        state = await send<ExtensionState>({ type: "GET_STATE" });
+        state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
         setView("main");
       }
     }),
@@ -518,7 +532,7 @@ function render(): void {
 }
 
 async function initialize(): Promise<void> {
-  state = isPreview() ? previewState() : await send<ExtensionState>({ type: "GET_STATE" });
+  state = isPreview() ? previewState() : await send<ExtensionState>({ type: "GET_POPUP_STATE" });
   render();
 }
 

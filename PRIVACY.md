@@ -22,6 +22,8 @@ Lectio Sync does not send timetable fields to iCloud and does not create an iClo
 
 By default, calendar events contain the module/activity title, activity note, time, room, teacher, Lectio activity link, and cancellation state. Homework is disabled by default and is included only after the user enables it. Attached files and their contents are not copied.
 
+The extension does not connect to the separate Lectio Sync macOS app or transfer data to it.
+
 ## Deletion and disconnect
 
 Disconnecting clears the relevant extension connection state. Chrome and Brave clear the browser OAuth cache; Firefox removes the locally stored refresh token and requests its revocation from Google. Disconnecting deliberately does not delete the dedicated calendar or its events, so it cannot unexpectedly erase the student's timetable. The user can delete the `Lectio` calendar in Google Calendar or Apple Calendar.

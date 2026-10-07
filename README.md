@@ -8,6 +8,8 @@ Lectio Sync is an open-source, local-first desktop browser extension that keeps 
 
 There is no Lectio password form, no MitID automation, and no hosted backend. The student signs into the real `lectio.dk` website. The extension then reuses that browser session for read-only timetable requests.
 
+This extension operates independently of the separate Lectio Sync macOS app. It manages its own calendar connection, settings, and synchronization.
+
 ## What works
 
 - Detects the student's school and student ID after a normal Lectio login.
@@ -44,7 +46,7 @@ npm install
 npm run verify
 ```
 
-`npm run verify` type-checks the source and builds all three release targets.
+`npm run verify` type-checks the source, runs the tests, and builds all three release targets.
 
 ## Browser support
 
@@ -89,6 +91,30 @@ npm run package:chrome
 The release ZIP is written to `artifacts/lectio-sync-chrome.zip`, with `manifest.json` at the archive root. Packaging deliberately fails if either OAuth ID is still a placeholder. Client secrets are neither needed nor allowed in the extension.
 
 The manifest uses Google's narrow `calendar.app.created` scope. Google documents that this permits creating secondary calendars and managing events only on calendars created by the app.
+
+### Google Calendar reports `401 Invalid Credentials`
+
+This means Calendar rejected the access token. It does not by itself establish that the OAuth project is restricted to test users. Lectio Sync clears the rejected token, obtains a replacement through the current browser's OAuth flow, and retries that request once. Background sync never opens a consent window. Concurrent requests using the same adapter share recovery, and calendar ownership is preserved.
+
+If renewal fails or the replacement is also rejected, select **Reconnect Google Calendar** and grant access again using the Google account that owns the dedicated Lectio calendar. Error details retain Google's response for diagnosis. The details screen also offers reconnection instead of repeating a silent sync. An installed older release needs the updated extension to receive this recovery behavior.
+
+References: [Google Calendar API errors](https://developers.google.com/workspace/calendar/api/guides/errors), [Chrome Identity token cache](https://developer.chrome.com/docs/extensions/reference/api/identity).
+
+### Google blocks sign-in: app has not completed verification
+
+The Google page saying **“Access blocked: Lectio Google calendar integration has not completed the Google verification process”**, with text saying the app is being tested and only developer-approved testers have access, indicates the OAuth project's **Testing** audience restriction. This happens before Google issues an access token; changing the extension's calendar synchronization code cannot lift that restriction. A generic `access_denied` alone does not establish this cause: it can also mean that the user declined permission.
+
+Fix the configuration of the project that owns the OAuth client used by the **installed release**, which may differ from a local `.env`:
+
+1. Identify that release's client: Chrome uses `oauth2.client_id` in its generated `manifest.json`; Brave uses the bundled `GOOGLE_BRAVE_OAUTH_CLIENT_ID`; Firefox uses the bundled `GOOGLE_FIREFOX_OAUTH_CLIENT_ID`. Find the matching client under **Google Auth Platform → Clients** in Google Cloud.
+2. For a temporary test, open **Audience → Test users** and add the user's exact Google account. Testing supports at most 100 test users, and Calendar authorizations (including Firefox refresh tokens) expire after seven days. This is a development workaround, not a public release configuration.
+3. For public distribution, set the audience to **External** and use **Publish app** to switch to **In production**. In **Data Access**, declare the `https://www.googleapis.com/auth/calendar.app.created` scope actually requested by all three flows. Check **Verification Center** and complete any verification Google requires; publishing and verification are separate steps. Provide the app's accurate branding, support/developer contacts, public homepage and privacy policy, and domain verification where requested. A repository privacy file alone is not a published privacy-policy URL.
+4. Check every OAuth project if browser clients belong to different projects. Changing one project's audience does not change another's. A console-only audience change does not require rebuilding the extension; a changed client ID does.
+5. Retry with the affected account and a separate Google account that is not a test user after the production/verification requirements are satisfied. Verify that authorization succeeds, the dedicated `Lectio` calendar is created, and a timetable event syncs. Local automated tests cannot confirm Google's live publishing or verification status.
+
+If access remains blocked in production, inspect Google's **error details** and Verification Center. Unapproved sensitive/restricted scopes can trigger an unverified-app warning and user cap; a managed school account can also be restricted by its Workspace administrator. Do not request broader calendar scopes to work around a verification block.
+
+References: [Google app audience and publishing status](https://support.google.com/cloud/answer/15549945?hl=en), [Google verification requirements](https://support.google.com/cloud/answer/13461325?hl=en-GB), [Calendar scope definitions](https://developers.google.com/workspace/calendar/api/auth).
 
 ### Firefox
 

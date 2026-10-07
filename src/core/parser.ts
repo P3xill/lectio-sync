@@ -36,7 +36,7 @@ function children(node: Node): Node[] {
   return "childNodes" in node ? (node.childNodes as Node[]) : [];
 }
 
-function validateDocumentComplexity(document: Node): void {
+function validateDocumentComplexity(document: Node): number {
   const pending: Array<{ node: Node; depth: number }> = [{ node: document, depth: 0 }];
   let visited = 0;
   while (pending.length > 0) {
@@ -49,29 +49,53 @@ function validateDocumentComplexity(document: Node): void {
       pending.push({ node: child, depth: current.depth + 1 });
     }
   }
+  return visited;
 }
 
 function getAttr(node: Element, name: string): string | undefined {
   return node.attrs.find((attribute) => attribute.name === name)?.value;
 }
 
-function classes(node: Element): string[] {
-  return (getAttr(node, "class") ?? "").split(/\s+/).filter(Boolean);
-}
-
 function hasClass(node: Element, className: string): boolean {
-  return classes(node).includes(className);
+  const value = getAttr(node, "class");
+  return value === className || Boolean(value && value.split(/\s+/).includes(className));
 }
 
-function walk(node: Node, callback: (node: Node, ancestors: Element[]) => void, ancestors: Element[] = []): void {
-  callback(node, ancestors);
-  const nextAncestors = isElement(node) ? [...ancestors, node] : ancestors;
-  for (const child of children(node)) walk(child, callback, nextAncestors);
+function walk(node: Node, callback: (node: Node, ancestors: Element[], depth: number) => void, ancestors: Element[] = [], depth = 0): void {
+  callback(node, ancestors, depth);
+  const element = isElement(node);
+  if (element) ancestors.push(node);
+  for (const child of children(node)) walk(child, callback, ancestors, depth + 1);
+  if (element) ancestors.pop();
 }
 
 function textContent(node: Node): string {
   if ("value" in node && typeof node.value === "string") return node.value;
   return children(node).map(textContent).join("");
+}
+
+// Activity fields inspect overlapping subtrees. Index text once; each lookup
+// is a substring rather than another traversal of every descendant.
+function indexText(document: Node): (node: Node) => string {
+  const ranges = new WeakMap<Node, [number, number]>();
+  const chunks: string[] = [];
+  let offset = 0;
+  const visit = (node: Node): void => {
+    const start = offset;
+    if ("value" in node && typeof node.value === "string") {
+      chunks.push(node.value);
+      offset += node.value.length;
+    } else {
+      for (const child of children(node)) visit(child);
+    }
+    ranges.set(node, [start, offset]);
+  };
+  visit(document);
+  const text = chunks.join("");
+  return (node) => {
+    const range = ranges.get(node)!;
+    return text.slice(range[0], range[1]);
+  };
 }
 
 function findFirst(node: Node, predicate: (element: Element) => boolean): Element | undefined {
@@ -107,28 +131,28 @@ function elementIdentity(node: Element): string {
     .toLowerCase();
 }
 
-function directText(node: Element): string {
+function directText(node: Element, readText = textContent): string {
   return cleanText(children(node)
     .filter((child) => !isElement(child))
-    .map(textContent)
+    .map(readText)
     .join(" "));
 }
 
-function valueByIdentity(document: Node, pattern: RegExp): string | undefined {
+function valueByIdentity(document: Node, pattern: RegExp, readText = textContent): string | undefined {
   const element = findFirst(document, (candidate) => pattern.test(elementIdentity(candidate)));
-  return boundedText(element ? textContent(element) : undefined, 5_000);
+  return boundedText(element ? readText(element) : undefined, 5_000);
 }
 
-function valueBesideLabel(document: Node, pattern: RegExp): string | undefined {
+function valueBesideLabel(document: Node, pattern: RegExp, readText = textContent): string | undefined {
   let value: string | undefined;
   walk(document, (node, ancestors) => {
-    if (value || !isElement(node) || !pattern.test(cleanText(textContent(node)))) return;
+    if (value || !isElement(node) || !pattern.test(cleanText(readText(node)))) return;
     const parent = ancestors.at(-1);
     if (!parent) return;
     const siblings = children(parent);
     const index = siblings.indexOf(node);
     for (const sibling of siblings.slice(index + 1)) {
-      const candidate = boundedText(textContent(sibling), 5_000);
+      const candidate = boundedText(readText(sibling), 5_000);
       if (candidate && !pattern.test(candidate)) {
         value = candidate;
         return;
@@ -147,21 +171,21 @@ function parseCompositeActivityTitle(value: string): string | undefined {
   return boundedText(parts.slice(1).join(" – "), 300);
 }
 
-function compositeActivityFields(document: Node): { title?: string; note?: string; found: boolean } {
+function compositeActivityFields(document: Node, readText = textContent, normalize = cleanText): { title?: string; note?: string; found: boolean } {
   const elements = findAll(document, () => true);
   const headingIndex = elements.findIndex((element) => {
-    const value = cleanText(textContent(element));
+    const value = normalize(readText(element));
     if (value.length > 500 || !/\bmodul\b/i.test(value)) return false;
     if (!parseCompositeActivityTitle(value)) return false;
-    return !children(element).some((child) => isElement(child) && parseCompositeActivityTitle(cleanText(textContent(child))));
+    return !children(element).some((child) => isElement(child) && parseCompositeActivityTitle(normalize(readText(child))));
   });
   if (headingIndex < 0) return { found: false };
 
-  const heading = cleanText(textContent(elements[headingIndex]!));
+  const heading = normalize(readText(elements[headingIndex]!));
   const title = parseCompositeActivityTitle(heading);
   let note: string | undefined;
   for (const element of elements.slice(headingIndex + 1)) {
-    const candidate = directText(element);
+    const candidate = directText(element, readText);
     if (!candidate) continue;
     if (/^(Lektier|Øvrigt indhold|Materiale|Dokumenter)$/i.test(candidate)) break;
     if (candidate === heading || heading.includes(candidate)) continue;
@@ -308,13 +332,13 @@ function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefine
   if (!ancestors.some((ancestor) => ancestor.tagName === "table" && hasClass(ancestor, "s2skema"))) return undefined;
   const tooltip = cleanText(getAttr(node, "data-tooltip") ?? getAttr(node, "data-additionalinfo") ?? "");
   const lines = tooltip.split("\n").map((line) => line.trim()).filter(Boolean);
-  const dayCell = [...ancestors].reverse().find((ancestor) => ancestor.tagName === "td" && getAttr(ancestor, "data-date"));
+  const dayCell = ancestors.findLast((ancestor) => ancestor.tagName === "td" && getAttr(ancestor, "data-date"));
   const dateTime = parseDateTime(tooltip, dayCell ? getAttr(dayCell, "data-date") : undefined);
   const href = getAttr(node, "href");
   const sourceId = parseSourceId(href);
   if (!dateTime || !sourceId) return undefined;
 
-  const rawStatus = `${lines[0] ?? ""} ${classes(node).join(" ")}`;
+  const rawStatus = `${lines[0] ?? ""} ${getAttr(node, "class") ?? ""}`;
   const status: LectioEvent["status"] = /aflyst|cancelled/i.test(rawStatus)
     ? "cancelled"
     : /ændret|changed/i.test(rawStatus)
@@ -357,16 +381,30 @@ export function parseLectioActivityDetails(
   }
 
   const document = parse(html) as Node;
-  validateDocumentComplexity(document);
-  const composite = compositeActivityFields(document);
+  const nodeCount = validateDocumentComplexity(document);
+  const readText = nodeCount > 128 ? indexText(document) : textContent;
+  const normalizedText = new Map<string, string>();
+  let cachedCharacters = 0;
+  const normalize = (value: string): string => {
+    const cached = normalizedText.get(value);
+    if (cached !== undefined) return cached;
+    const cleaned = cleanText(value);
+    // Bound retained strings even on deeply nested pages near the input limit.
+    if (cachedCharacters + value.length + cleaned.length <= 2_000_000) {
+      normalizedText.set(value, cleaned);
+      cachedCharacters += value.length + cleaned.length;
+    }
+    return cleaned;
+  };
+  const composite = compositeActivityFields(document, readText, nodeCount > 128 ? normalize : cleanText);
   const recognizedActivityPage = isRecognizedLectioActivityPage(document, finalUrl);
-  const title = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*(?:s)?titel|activity[-_ ]*title/i)
-    ?? valueBesideLabel(document, /^(?:Aktivitets)?titel\s*:?$/i)
+  const title = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*(?:s)?titel|activity[-_ ]*title/i, readText)
+    ?? valueBesideLabel(document, /^(?:Aktivitets)?titel\s*:?$/i, readText)
     ?? composite.title;
-  const note = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*note/i)
-    ?? valueBesideLabel(document, /^(?:Aktivitets)?note\s*:?$/i)
+  const note = valueByIdentity(document, /(?:aktivitet|activity)[-_ ]*note/i, readText)
+    ?? valueBesideLabel(document, /^(?:Aktivitets)?note\s*:?$/i, readText)
     ?? composite.note;
-  const bodyText = cleanText(textContent(document));
+  const bodyText = cleanText(readText(document));
   const structuralMarkers = Number(recognizedActivityPage)
     + Number(composite.found)
     + Number(Boolean(title || note))
@@ -391,7 +429,6 @@ export function parseLectioSchedule(html: string, finalUrl = "https://www.lectio
   }
 
   const document = parse(html) as Node;
-  validateDocumentComplexity(document);
   const events: LectioEvent[] = [];
   let structuralMarkers = 0;
   let scheduleTables = 0;
@@ -399,7 +436,11 @@ export function parseLectioSchedule(html: string, finalUrl = "https://www.lectio
   let eventCandidates = 0;
   let malformedCandidates = 0;
 
-  walk(document, (node, ancestors) => {
+  let visited = 0;
+  walk(document, (node, ancestors, depth) => {
+    if (++visited > MAX_DOCUMENT_NODES || depth > MAX_DOCUMENT_DEPTH) {
+      throw new LectioParserError("UNEXPECTED_PAGE", "Lectio returned a page that was too complex.");
+    }
     if (!isElement(node)) return;
     if (node.tagName === "table" && hasClass(node, "s2skema")) {
       scheduleTables += 1;

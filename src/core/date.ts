@@ -6,6 +6,12 @@ const COPENHAGEN_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit"
 });
 
+let COPENHAGEN_DATETIME_FORMATTER: Intl.DateTimeFormat | undefined;
+
+let DISPLAY_TIME_FORMATTER: Intl.DateTimeFormat | undefined;
+
+let DISPLAY_DATETIME_FORMATTER: Intl.DateTimeFormat | undefined;
+
 export interface IsoWeek {
   week: number;
   year: number;
@@ -48,7 +54,7 @@ export function getFetchWeekOffsets(initialSync: boolean, horizonWeeks: number, 
 }
 
 export function formatCopenhagenDateTime(date: Date): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
+  const formatter = COPENHAGEN_DATETIME_FORMATTER ??= new Intl.DateTimeFormat("en-CA", {
     timeZone: COPENHAGEN_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
@@ -57,22 +63,24 @@ export function formatCopenhagenDateTime(date: Date): string {
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23"
-  }).formatToParts(date);
+  });
+  const parts = formatter.formatToParts(date);
   const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}:${values.second}`;
 }
 
 export function formatDisplayTime(date: Date): string {
-  return new Intl.DateTimeFormat("en-GB", {
+  const formatter = DISPLAY_TIME_FORMATTER ??= new Intl.DateTimeFormat("en-GB", {
     timeZone: COPENHAGEN_TIME_ZONE,
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23"
-  }).format(date);
+  });
+  return formatter.format(date);
 }
 
 export function formatDisplayDateTime(date: Date): string {
-  return new Intl.DateTimeFormat("en-GB", {
+  const formatter = DISPLAY_DATETIME_FORMATTER ??= new Intl.DateTimeFormat("en-GB", {
     timeZone: COPENHAGEN_TIME_ZONE,
     day: "2-digit",
     month: "2-digit",
@@ -81,7 +89,8 @@ export function formatDisplayDateTime(date: Date): string {
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23"
-  }).format(date);
+  });
+  return formatter.format(date);
 }
 
 export { COPENHAGEN_TIME_ZONE };

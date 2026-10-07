@@ -1,3 +1,4 @@
+import browser from "webextension-polyfill";
 import type { CalendarAdapter, CalendarWindow } from "./calendar-adapter";
 import { toGoogleResource } from "./calendar-adapter";
 import {
@@ -18,6 +19,8 @@ const API_ROOT = "https://www.googleapis.com/calendar/v3";
 const GOOGLE_OAUTH_CLIENT_ID_PATTERN = /^\d{6,}-[a-z0-9_-]+\.apps\.googleusercontent\.com$/iu;
 const WRITE_INTERVAL_MS = 175;
 const RATE_LIMIT_RETRY_DELAYS_MS = [350, 700, 1_400];
+const OWNED_CALENDAR_KEY = "lectioSyncOwnedGoogleCalendarV1";
+let calendarConnectionQueue: Promise<unknown> = Promise.resolve();
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -38,7 +41,7 @@ export class GoogleApiError extends Error {
   readonly code: "GOOGLE_AUTH_REQUIRED" | "GOOGLE_API";
   readonly occurredAt = new Date().toISOString();
 
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly technicalDetail?: string) {
     super(message);
     this.name = "GoogleApiError";
     this.code = status === 401 ? "GOOGLE_AUTH_REQUIRED" : "GOOGLE_API";
@@ -49,12 +52,30 @@ export function isValidGoogleOAuthClientId(clientId: string): boolean {
   return GOOGLE_OAUTH_CLIENT_ID_PATTERN.test(clientId);
 }
 
+function googleAuthenticationError(error: unknown): GoogleApiError {
+  const detail = String(error);
+  if (/has not completed.*(?:Google )?verification|app.*(?:in testing|being tested)|only.*(?:approved|developer-approved) testers/iu.test(detail)) {
+    return new GoogleApiError(401,
+      "Google blocked access to Lectio Sync because the app is in testing or has not completed verification. Contact Lectio Sync support; the developer must enable access in Google Cloud before you can connect."
+    );
+  }
+  if (/\baccess_denied\b/iu.test(detail)) {
+    return new GoogleApiError(401,
+      "Google Calendar access was denied. If you declined permission, reconnect and allow access. If Google says Lectio Sync is blocked or unverified, contact Lectio Sync support so the developer can fix the app's Google Cloud configuration."
+    );
+  }
+  return new GoogleApiError(401,
+    "Google Calendar could not renew access. Reconnect Google Calendar and allow access to resume synchronization.",
+    detail.slice(0, 500)
+  );
+}
+
 async function getGoogleToken(interactive: boolean): Promise<string> {
   if (__TARGET_BROWSER__ === "firefox") {
     try {
       return await getFirefoxGoogleToken(interactive);
     } catch (error) {
-      throw new GoogleApiError(401, String(error).slice(0, 500));
+      throw googleAuthenticationError(error);
     }
   } else {
     if (await isBraveBrowser()) {
@@ -64,7 +85,7 @@ async function getGoogleToken(interactive: boolean): Promise<string> {
       try {
         return await getBraveGoogleToken(interactive);
       } catch (error) {
-        throw new GoogleApiError(401, String(error).slice(0, 500));
+        throw googleAuthenticationError(error);
       }
     }
     if (!chrome.identity?.getAuthToken) throw new GoogleApiError(401, "Google authentication is unavailable.");
@@ -76,10 +97,7 @@ async function getGoogleToken(interactive: boolean): Promise<string> {
     try {
       result = await chrome.identity.getAuthToken({ interactive });
     } catch (error) {
-      throw new GoogleApiError(
-        401,
-        `Google authentication failed. In Brave, enable “Allow Google login for extensions”. ${String(error)}`.slice(0, 500)
-      );
+      throw googleAuthenticationError(error);
     }
     // Brave has shipped Chromium identity implementations that preserve the
     // legacy string result while current Chrome returns GetAuthTokenResult.
@@ -92,16 +110,46 @@ async function getGoogleToken(interactive: boolean): Promise<string> {
 async function invalidateGoogleToken(token: string): Promise<void> {
   if (__TARGET_BROWSER__ === "firefox") {
     invalidateFirefoxAccessToken(token);
-  } else if (chrome.identity?.removeCachedAuthToken) {
+  } else {
     invalidateBraveAccessToken(token);
-    await chrome.identity.removeCachedAuthToken({ token });
+    if (!await isBraveBrowser() && chrome.identity?.removeCachedAuthToken) await chrome.identity.removeCachedAuthToken({ token });
   }
 }
 
 export class GoogleCalendarAdapter implements CalendarAdapter {
+  private tokenRequest: Promise<string> | undefined;
+  private tokenRecovery: { rejectedToken: string; request: Promise<string> } | undefined;
+
+  private token(interactive: boolean): Promise<string> {
+    // Share only in-flight silent authentication; do not cache an access token.
+    if (interactive) return getGoogleToken(true);
+    if (this.tokenRequest) return this.tokenRequest;
+    const pending = getGoogleToken(false);
+    this.tokenRequest = pending;
+    void pending.then(
+      () => { if (this.tokenRequest === pending) this.tokenRequest = undefined; },
+      () => { if (this.tokenRequest === pending) this.tokenRequest = undefined; }
+    );
+    return pending;
+  }
+
+  private recoverToken(rejectedToken: string, interactive: boolean): Promise<string> {
+    // Late 401 responses for the same token reuse the recovery already started.
+    if (this.tokenRecovery?.rejectedToken === rejectedToken) return this.tokenRecovery.request;
+    const request = invalidateGoogleToken(rejectedToken).then(() => this.token(interactive));
+    const recovery = { rejectedToken, request };
+    this.tokenRecovery = recovery;
+    void request.catch(() => {
+      if (this.tokenRecovery === recovery) this.tokenRecovery = undefined;
+    });
+    return request;
+  }
+
   private async request<T>(path: string, init: RequestInit = {}, interactive = false): Promise<T> {
-    const token = await getGoogleToken(interactive);
-    for (let attempt = 0; ; attempt += 1) {
+    let token = await this.token(interactive);
+    let authenticationRetried = false;
+    let rateLimitAttempt = 0;
+    for (;;) {
       const response = await fetch(`${API_ROOT}${path}`, {
         ...init,
         headers: {
@@ -111,13 +159,26 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
         }
       });
 
-      if (response.status === 401) await invalidateGoogleToken(token);
       if (!response.ok) {
         const body = await response.text();
-        const retryDelay = RATE_LIMIT_RETRY_DELAYS_MS[attempt];
+        if (response.status === 401) {
+          if (!authenticationRetried) {
+            authenticationRetried = true;
+            token = await this.recoverToken(token, interactive);
+            continue;
+          }
+          await invalidateGoogleToken(token);
+          this.tokenRecovery = undefined;
+          throw new GoogleApiError(401,
+            "Google Calendar access has expired or was revoked. Reconnect Google Calendar and allow access to resume synchronization.",
+            body.slice(0, 500) || "Google Calendar returned 401 Invalid Credentials."
+          );
+        }
+        const retryDelay = RATE_LIMIT_RETRY_DELAYS_MS[rateLimitAttempt];
         const rateLimited = (response.status === 403 || response.status === 429)
           && /rateLimitExceeded|userRateLimitExceeded|Rate Limit Exceeded/i.test(body);
         if (rateLimited && retryDelay !== undefined) {
+          rateLimitAttempt += 1;
           await delay(retryDelay);
           continue;
         }
@@ -128,20 +189,36 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
     }
   }
 
-  async ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
-    if (currentCalendarId) {
+  ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
+    // Connections can come from separate adapter instances (popup and sync).
+    const pending = calendarConnectionQueue.then(() => this.ensureCalendar(interactive, currentCalendarId, calendarColor));
+    calendarConnectionQueue = pending.catch(() => undefined);
+    return pending;
+  }
+
+  private async ensureCalendar(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
+    const stored = (await browser.storage.local.get(OWNED_CALENDAR_KEY))[OWNED_CALENDAR_KEY];
+    const identifiers = [...new Set([currentCalendarId, typeof stored === "string" ? stored : undefined])];
+    for (const identifier of identifiers) {
+      if (!identifier) continue;
       try {
-        await this.request(`/calendars/${encodeURIComponent(currentCalendarId)}`, {}, interactive);
-        return { calendarId: currentCalendarId, calendarName: "Lectio" };
+        await this.request(`/calendars/${encodeURIComponent(identifier)}?fields=id`, {}, interactive);
       } catch (error) {
         if (!(error instanceof GoogleApiError) || (error.status !== 404 && error.status !== 410)) throw error;
+        continue;
       }
+      await browser.storage.local.set({ [OWNED_CALENDAR_KEY]: identifier });
+      if (calendarColor && identifier !== currentCalendarId) await this.setColor(identifier, calendarColor);
+      return { calendarId: identifier, calendarName: "Lectio" };
     }
 
-    const calendar = await this.request<{ id: string }>("/calendars", {
+    const calendar = await this.request<{ id: string }>("/calendars?fields=id", {
       method: "POST",
       body: JSON.stringify({ summary: "Lectio", timeZone: "Europe/Copenhagen" })
     }, interactive);
+    // Persist ownership before optional colour writes: a failed PATCH must not
+    // cause the next connection attempt to POST another calendar.
+    await browser.storage.local.set({ [OWNED_CALENDAR_KEY]: calendar.id });
     if (calendarColor) await this.setColor(calendar.id, calendarColor);
     return { calendarId: calendar.id, calendarName: "Lectio" };
   }
@@ -157,7 +234,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       ? "#000000"
       : "#FFFFFF";
     await this.request(
-      `/users/me/calendarList/${encodeURIComponent(calendarId)}?colorRgbFormat=true`,
+      `/users/me/calendarList/${encodeURIComponent(calendarId)}?colorRgbFormat=true&fields=id`,
       {
         method: "PATCH",
         body: JSON.stringify({ backgroundColor: calendarColor.toUpperCase(), foregroundColor })
@@ -175,7 +252,8 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
         singleEvents: "true",
         timeMin: window.timeMin,
         timeMax: window.timeMax,
-        maxResults: "2500"
+        maxResults: "2500",
+        fields: "nextPageToken,items(id,status,extendedProperties/private)"
       });
       if (pageToken) query.set("pageToken", pageToken);
       const response = await this.request<GoogleListResponse>(
@@ -231,7 +309,7 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
           } else if (operation.kind === "insert") {
             await waitForWriteSlot();
             try {
-              await this.request(`/calendars/${encodeURIComponent(calendarId)}/events`, {
+              await this.request(`/calendars/${encodeURIComponent(calendarId)}/events?fields=id`, {
                 method: "POST",
                 body: JSON.stringify(toGoogleResource(operation.event))
               });
@@ -258,22 +336,24 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
       }
     }));
     if (failure !== undefined) throw failure;
+    summary.completedAt = new Date().toISOString();
     return summary;
   }
 
   private async update(calendarId: string, eventId: string, event: CalendarEventInput): Promise<void> {
-    await this.request(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+    await this.request(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?fields=id`, {
       method: "PUT",
       body: JSON.stringify(toGoogleResource(event))
     });
   }
 
   async disconnect(): Promise<void> {
+    this.tokenRecovery = undefined;
     if (__TARGET_BROWSER__ === "firefox") {
       await disconnectFirefoxGoogle();
-    } else if (chrome.identity?.clearAllCachedAuthTokens) {
+    } else {
       await disconnectBraveGoogle();
-      await chrome.identity.clearAllCachedAuthTokens();
+      if (!await isBraveBrowser() && chrome.identity?.clearAllCachedAuthTokens) await chrome.identity.clearAllCachedAuthTokens();
     }
   }
 }

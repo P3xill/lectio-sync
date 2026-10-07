@@ -1,7 +1,7 @@
 import browser from "webextension-polyfill";
 import { schoolIdFromUrl } from "./core/account";
 import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./core/settings";
-import { clearState, getState, patchState } from "./core/storage";
+import { clearState, getState, getStateSummary, patchState } from "./core/storage";
 import { ALARM_NAME, connectCalendar, runSync, scheduleNextSync, updateCalendarColor } from "./core/sync-engine";
 import { disconnectFirefoxGoogle } from "./core/firefox-oauth";
 import { disconnectBraveGoogle, isBraveBrowser } from "./core/brave-oauth";
@@ -32,6 +32,7 @@ function parseRuntimeMessage(value: unknown): RuntimeMessage | undefined {
   const message = value as Record<string, unknown>;
   switch (message.type) {
     case "GET_STATE":
+    case "GET_POPUP_STATE":
     case "START_LECTIO_SETUP":
     case "CONNECT_GOOGLE":
     case "SYNC_NOW":
@@ -73,6 +74,8 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
     switch (message.type) {
       case "GET_STATE":
         return { ok: true, data: await refreshLectioConnection() };
+      case "GET_POPUP_STATE":
+        return { ok: true, data: { ...await refreshLectioConnection(false), sourceSnapshots: {} } };
       case "START_LECTIO_SETUP":
         await discoverLectioAccount(await openLectioTab());
         return { ok: true, data: await getState() };
@@ -152,6 +155,9 @@ async function connectLectioAccount(
   const currentAccount = state.lectioAccount;
   const accountChanged = currentAccount?.schoolId !== schoolId
     || currentAccount?.studentId !== studentId;
+  if (!accountChanged && state.status !== "lectio_expired" && currentAccount?.schoolName === schoolName) {
+    return state;
+  }
   const account = {
     schoolId,
     studentId,
@@ -225,8 +231,9 @@ async function discoverLectioAccount(tab: LectioTab | undefined): Promise<boolea
   }
 }
 
-async function refreshLectioConnection() {
-  const state = await getState();
+async function refreshLectioConnection(includeSnapshots = true) {
+  const readState = includeSnapshots ? getState : getStateSummary;
+  const state = await readState();
   if (__TARGET_BROWSER__ !== "safari") return state;
 
   const tabs = await browser.tabs.query({});
@@ -237,7 +244,7 @@ async function refreshLectioConnection() {
 
   for (const candidate of candidates) {
     if (await discoverLectioAccount(candidate)) {
-      return restoreSafariCalendarConnection(await getState());
+      return restoreSafariCalendarConnection(await readState());
     }
   }
 
@@ -287,7 +294,9 @@ function lectioTabs(tabs: LectioTab[], schoolPrefix: string | undefined): Lectio
         return false;
       }
     })
-    .sort((left, right) => lectioTabScore(right.url, schoolPrefix) - lectioTabScore(left.url, schoolPrefix));
+    .map((tab) => ({ tab, score: lectioTabScore(tab.url, schoolPrefix) }))
+    .sort((left, right) => right.score - left.score)
+    .map(({ tab }) => tab);
 }
 
 function lectioTabScore(rawUrl: string | undefined, schoolPrefix: string | undefined): number {
