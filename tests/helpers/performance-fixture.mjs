@@ -10,11 +10,11 @@ export const activity = `<div id="NiceFeaturesForAktivitetDialog"><h1 id="activi
 
 export async function compileFixture(root = 'src', target = 'chrome', options = {}) {
   const modules = ['parser', 'storage', 'calendar-event', 'calendar-adapter', 'crypto', 'google-calendar', 'safari-calendar', 'lectio-session', 'sync-engine', 'date'];
-  if (root === 'src') modules.push('concurrency');
+  if (root === 'src') modules.push('concurrency', 'brave-oauth', 'firefox-oauth');
   const contents = options.startup ? `import ${JSON.stringify(resolve(root, "background.ts"))};` : modules.map((name, i) => `import * as m${i} from ${JSON.stringify(resolve(root, 'core', name + '.ts'))};`).join('\n')
     + `\nglobalThis.api = Object.assign({}, ${modules.map((_, i) => 'm' + i).join(',')});`;
   const bundle = await build({ stdin: { contents, resolveDir: process.cwd(), loader: 'ts' }, bundle: true, write: false, format: 'iife', platform: 'browser', minify: Boolean(options.startup),
-    define: { __TARGET_BROWSER__: JSON.stringify(target), __CHROMIUM_OAUTH_MODE__: JSON.stringify(options.oauthMode ?? 'chrome'), __GOOGLE_FIREFOX_OAUTH_CLIENT_ID__: '"fixture"', __GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET__: '"fixture"', __GOOGLE_BRAVE_OAUTH_CLIENT_ID__: JSON.stringify(options.braveClientId ?? 'fixture') },
+    define: { __TARGET_BROWSER__: JSON.stringify(target), __CHROMIUM_OAUTH_MODE__: JSON.stringify(options.oauthMode ?? 'chrome'), __GOOGLE_FIREFOX_OAUTH_CLIENT_ID__: JSON.stringify(options.firefoxClientId ?? 'fixture'), __GOOGLE_FIREFOX_OAUTH_CLIENT_SECRET__: '"fixture"', __GOOGLE_BRAVE_OAUTH_CLIENT_ID__: JSON.stringify(options.braveClientId ?? 'fixture') },
     plugins: [{ name: 'fixture', setup(build) {
       build.onResolve({ filter: /^webextension-polyfill$/ }, () => ({ path: 'browser', namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: 'export default globalThis.testBrowser;', loader: 'js' }));
@@ -30,6 +30,7 @@ export function fixture(bundle, options = {}) {
   const requests = [];
   const events = [];
   const event = { addListener() {} };
+  let messageHandler;
   const browser = {
     storage: { local: {
       get: async () => { counts.gets++; return structuredClone(data); },
@@ -43,7 +44,7 @@ export function fixture(bundle, options = {}) {
     },
     alarms: { onAlarm: event, clear: async () => {}, create: async () => {} },
     notifications: { onClicked: event, create: async () => {} },
-    runtime: { onMessage: event, onInstalled: event, onStartup: event, getURL: path => path, sendNativeMessage: async () => { counts.native++; return { ok: true, data: {} }; } }
+    runtime: { onMessage: { addListener: handler => { messageHandler = handler; } }, onInstalled: event, onStartup: event, getURL: path => path, getPlatformInfo: async () => ({ os: "mac" }), sendNativeMessage: async (...args) => { counts.native++; return options.sendNativeMessage ? options.sendNativeMessage(...args) : { ok: true, data: {} }; } }
   };
   const fetch = async (url, init = {}) => {
     url = String(url); requests.push({ url, ...init });
@@ -66,9 +67,9 @@ export function fixture(bundle, options = {}) {
   const context = vm.createContext({ testBrowser: browser, chrome: {
     identity: { getAuthToken: async details => { counts.tokens++; if (options.tokenLatency) await new Promise(resolve => setTimeout(resolve, options.tokenLatency)); if (options.getAuthToken) return options.getAuthToken(details, counts.tokens); return { token: 'fixture-token' }; }, removeCachedAuthToken: async details => { if (options.removeCachedAuthToken) await options.removeCachedAuthToken(details); } },
     runtime: { id: 'fixture', getManifest: () => ({ oauth2: { client_id: '123456-test.apps.googleusercontent.com' } }) }
-  }, fetch, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder, crypto: webcrypto, atob, btoa, console, setTimeout, clearTimeout });
+  }, fetch, Response, Headers, URL, URLSearchParams, TextEncoder, TextDecoder, crypto: webcrypto, atob, btoa, console, setTimeout: options.setTimeout ?? setTimeout, clearTimeout, setInterval, clearInterval });
   if (options.chromeIdentity) Object.assign(context.chrome.identity, options.chromeIdentity);
   if (options.browserIdentity) browser.identity = options.browserIdentity;
   vm.runInContext(bundle, context);
-  return { api: context.api, data, counts, requests, events, browser };
+  return { api: context.api, data, counts, requests, events, browser, send: message => messageHandler(message, {}) };
 }

@@ -15,7 +15,10 @@ let view: View = "main";
 let busy = false;
 let transientMessage = "";
 let transientIsError = false;
+let existingCalendarIdDraft = "";
 let browserApi: typeof browser | undefined;
+let calendarConnectionPending = false;
+let connectionPollTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isSafari = __TARGET_BROWSER__ === "safari";
 const calendarStatusLabel = isSafari ? "Google via Apple Calendar" : "Google Calendar";
@@ -56,6 +59,10 @@ function previewState(): ExtensionState {
       lastError: { code: "GOOGLE_AUTH_REQUIRED", message: "Google Calendar access needs to be reconnected.", occurredAt: now.toISOString() }
     };
   }
+  if (preview === "google-connecting") {
+    calendarConnectionPending = true;
+    return { ...DEFAULT_STATE, lectioAccount: connected.lectioAccount };
+  }
   if (preview === "settings") {
     view = "settings";
     return { ...DEFAULT_STATE, ...connected, status: "healthy", lastSuccessAt: now.toISOString() };
@@ -79,8 +86,20 @@ async function send<T = unknown>(message: RuntimeMessage): Promise<T> {
     return undefined as T;
   }
   browserApi ??= (await import("webextension-polyfill")).default;
-  const response = await browserApi.runtime.sendMessage(message) as RuntimeResponse<T>;
+  if (message.type === "CONNECT_GOOGLE") {
+    calendarConnectionPending = true;
+    render();
+  }
+  let response: RuntimeResponse<T>;
+  try {
+    response = await browserApi.runtime.sendMessage(message) as RuntimeResponse<T>;
+  } finally {
+    if (message.type === "CONNECT_GOOGLE") calendarConnectionPending = false;
+  }
   if (!response.ok) throw response.error ?? new Error("Action failed.");
+  if (message.type === "GET_POPUP_STATE") {
+    calendarConnectionPending = Boolean((response.data as ExtensionState & { calendarConnectionPending?: boolean })?.calendarConnectionPending);
+  }
   return response.data as T;
 }
 
@@ -235,6 +254,40 @@ function appleCalendarNote(): HTMLElement {
   );
 }
 
+function existingCalendarRecovery(): HTMLElement | undefined {
+  if (isSafari || !state.lectioAccount) return undefined;
+  const form = node("form", { className: "settings-form" });
+  const input = node("input", { attrs: {
+    type: "text", id: "existing-calendar-id", name: "calendar-id",
+    required: "", maxlength: "512", autocomplete: "off", spellcheck: "false",
+    pattern: "[a-zA-Z0-9._\\-]+@group\\.calendar\\.google\\.com",
+    placeholder: "…@group.calendar.google.com"
+  } });
+  input.value = existingCalendarIdDraft;
+  input.addEventListener("input", () => { existingCalendarIdDraft = input.value; });
+  const useCalendar = node("button", { className: "button secondary full", text: "Use this calendar", attrs: { type: "button" } });
+  useCalendar.disabled = busy;
+  useCalendar.addEventListener("click", () => {
+    input.value = input.value.trim();
+    if (!form.reportValidity()) return;
+    existingCalendarIdDraft = input.value;
+    const calendarId = input.value;
+    void perform(async () => {
+      state = await send<ExtensionState>({ type: "CONNECT_GOOGLE", calendarId });
+      existingCalendarIdDraft = "";
+    });
+  });
+  form.append(
+    node("p", { text: "Use a calendar previously created by Lectio Sync. In Google Calendar, open Settings → select that Lectio calendar → Integrate calendar, then copy its Calendar ID." }),
+    node("label", { className: "field", attrs: { for: "existing-calendar-id" } },
+      node("span", { text: "Existing Lectio Calendar ID" }), input),
+    useCalendar
+  );
+  form.addEventListener("submit", event => { event.preventDefault(); useCalendar.click(); });
+  return node("details", { className: "existing-calendar-recovery", attrs: existingCalendarIdDraft ? { open: "" } : {} },
+    node("summary", { text: "Already have an empty Lectio calendar?" }), form);
+}
+
 function setupView(): HTMLElement {
   const lectioConnected = Boolean(state.lectioAccount);
   const googleConnected = Boolean(state.googleCalendarId);
@@ -278,7 +331,7 @@ function setupView(): HTMLElement {
     });
   }
 
-  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, appleCalendarNote(), node("div", { className: "setup-footer" }, privacy, transient(), button)));
+  return node("div", { className: "popup-shell" }, header(), node("main", { className: "content setup-content" }, title, intro, steps, appleCalendarNote(), node("div", { className: "setup-footer" }, privacy, transient(), button, !googleConnected ? existingCalendarRecovery() : undefined)));
 }
 
 function setupStep(number: string, title: string, complete: boolean, detail: string): HTMLElement {
@@ -357,6 +410,7 @@ function recoveryView(expired: boolean): HTMLElement {
       }),
       secondaryAction
     ),
+    !expired ? existingCalendarRecovery() : undefined,
     transient()
   ));
 }
@@ -493,6 +547,7 @@ function detailsView(): HTMLElement {
       ? "Some changes may have been applied. Try again to reconcile the dedicated Lectio calendar."
       : "Lectio Sync stopped before writing to your calendar." }),
     node("dl", { className: "detail-list" },
+      node("dt", { text: "Extension version" }), node("dd", { text: isPreview() ? "Preview" : browserApi?.runtime.getManifest().version ?? "Unknown" }),
       node("dt", { text: "Error" }), node("dd", { text: error?.code ?? "UNKNOWN" }),
       node("dt", { text: "When" }), node("dd", { text: error ? formatDisplayDateTime(new Date(error.occurredAt)) : "Unknown" }),
       node("dt", { text: "Technical detail" }), node("dd", { text: error?.technicalDetail ?? error?.message ?? "No details available." })
@@ -522,13 +577,48 @@ function transient(): HTMLElement | undefined {
 
 function render(): void {
   root.replaceChildren();
-  if (view === "settings") root.append(settingsView());
+  if (calendarConnectionPending) root.append(connectionPendingView());
+  else if (view === "settings") root.append(settingsView());
   else if (view === "details") root.append(detailsView());
   else if (state.status === "lectio_expired") root.append(recoveryView(true));
   else if (state.status === "safe_error" || state.status === "google_disconnected") root.append(recoveryView(false));
   else if (state.lectioAccount && state.googleCalendarId && ["healthy", "ready", "syncing"].includes(state.status)) root.append(healthyView());
   else root.append(setupView());
   focusPendingTarget();
+  scheduleConnectionPoll();
+}
+
+function connectionPendingView(): HTMLElement {
+  return node("div", { className: "popup-shell" }, header("Lectio Sync", false, false),
+    node("main", { className: "content", attrs: { "aria-live": "polite" } },
+      node("h1", { text: "Connecting your calendar" }),
+      node("p", { className: "lead", text: isSafari
+        ? "Complete the Apple Calendar connection. This screen updates automatically."
+        : "Finish Google sign-in in the window that opened. You can close and reopen Lectio Sync; this screen updates automatically." }),
+      node("p", { text: isSafari
+        ? "Wait for the connection to finish before trying again."
+        : "Cannot find the sign-in window? Check your other browser windows. Close that Google sign-in window to cancel, then try again here." }),
+      node("p", { className: "muted", text: "Waiting for the connection…", attrs: { role: "status" } }),
+      transient()
+    )
+  );
+}
+
+function scheduleConnectionPoll(): void {
+  if (connectionPollTimer) clearTimeout(connectionPollTimer);
+  if (!calendarConnectionPending || isPreview()) return;
+  connectionPollTimer = setTimeout(() => {
+    connectionPollTimer = undefined;
+    void send<ExtensionState>({ type: "GET_POPUP_STATE" }).then(next => {
+      state = next;
+      if (!calendarConnectionPending) view = "main";
+      render();
+    }).catch(() => {
+      transientMessage = "Could not check the connection. Close and reopen Lectio Sync to check again.";
+      transientIsError = true;
+      render();
+    });
+  }, 1_000);
 }
 
 async function initialize(): Promise<void> {
@@ -537,6 +627,9 @@ async function initialize(): Promise<void> {
 }
 
 void initialize().catch((error) => {
-  transientMessage = String(error);
+  transientMessage = typeof error === "object" && error && "message" in error
+    ? String(error.message)
+    : "Lectio Sync could not load. Reload the extension and try again.";
+  transientIsError = true;
   render();
 });

@@ -2,9 +2,9 @@ import browser from "webextension-polyfill";
 import { schoolIdFromUrl } from "./core/account";
 import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./core/settings";
 import { clearState, getState, getStateSummary, patchState } from "./core/storage";
-import { ALARM_NAME, connectCalendar, runSync, scheduleNextSync, updateCalendarColor } from "./core/sync-engine";
-import { disconnectFirefoxGoogle } from "./core/firefox-oauth";
-import { disconnectBraveGoogle, isBraveBrowser } from "./core/brave-oauth";
+import { ALARM_NAME, assertCalendarConnectionGeneration, cancelCalendarConnection, connectCalendar, getCalendarConnectionGeneration, runSync, scheduleNextSync, updateCalendarColor } from "./core/sync-engine";
+import { GoogleCalendarAdapter } from "./core/google-calendar";
+import { SafariCalendarAdapter } from "./core/safari-calendar";
 import { toRuntimeSafeError } from "./core/runtime-error";
 import type { LectioDiscoveryRequest, LectioDiscoveryResponse } from "./core/lectio-session";
 import {
@@ -27,6 +27,34 @@ interface LectioTab {
   windowId?: number;
 }
 
+let calendarConnectionRequest: { calendarId?: string; request: Promise<RuntimeResponse> } | undefined;
+
+function connectGoogle(calendarId?: string): Promise<RuntimeResponse> {
+  if (calendarConnectionRequest) {
+    if (calendarConnectionRequest.calendarId === calendarId) return calendarConnectionRequest.request;
+    return Promise.resolve({ ok: false, error: toRuntimeSafeError(new Error(
+      "A calendar connection is already in progress. Complete or close Google sign-in before choosing another calendar."
+    )) });
+  }
+  const generation = getCalendarConnectionGeneration();
+  const request = (async (): Promise<RuntimeResponse> => {
+    try {
+      return { ok: true, data: await connectCalendar(true, calendarId) };
+    } catch (error) {
+      const safeError = toRuntimeSafeError(error);
+      // A late result must not overwrite a disconnect or a full reset.
+      if (generation === getCalendarConnectionGeneration()) {
+        await patchState({ status: "google_disconnected", lastError: safeError }, () => assertCalendarConnectionGeneration(generation));
+      }
+      return { ok: false, error: safeError };
+    }
+  })().finally(() => {
+    if (calendarConnectionRequest?.request === request) calendarConnectionRequest = undefined;
+  });
+  calendarConnectionRequest = { calendarId, request };
+  return request;
+}
+
 function parseRuntimeMessage(value: unknown): RuntimeMessage | undefined {
   if (typeof value !== "object" || value === null || !("type" in value)) return undefined;
   const message = value as Record<string, unknown>;
@@ -34,11 +62,19 @@ function parseRuntimeMessage(value: unknown): RuntimeMessage | undefined {
     case "GET_STATE":
     case "GET_POPUP_STATE":
     case "START_LECTIO_SETUP":
-    case "CONNECT_GOOGLE":
     case "SYNC_NOW":
     case "CHECK_LECTIO":
     case "OPEN_SETTINGS":
       return { type: message.type };
+    case "CONNECT_GOOGLE":
+      if (message.calendarId === undefined) return { type: message.type };
+      if (
+        __TARGET_BROWSER__ === "safari"
+        || typeof message.calendarId !== "string"
+        || message.calendarId.length > 512
+        || !/^[a-z0-9._-]+@group\.calendar\.google\.com$/iu.test(message.calendarId)
+      ) return undefined;
+      return { type: message.type, calendarId: message.calendarId };
     case "LECTIO_PAGE_SEEN":
       if (
         typeof message.url !== "string"
@@ -75,7 +111,7 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
       case "GET_STATE":
         return { ok: true, data: await refreshLectioConnection() };
       case "GET_POPUP_STATE":
-        return { ok: true, data: { ...await refreshLectioConnection(false), sourceSnapshots: {} } };
+        return { ok: true, data: { ...await refreshLectioConnection(false), sourceSnapshots: {}, calendarConnectionPending: Boolean(calendarConnectionRequest) } };
       case "START_LECTIO_SETUP":
         await discoverLectioAccount(await openLectioTab());
         return { ok: true, data: await getState() };
@@ -90,13 +126,7 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
         return { ok: true, data: next };
       }
       case "CONNECT_GOOGLE": {
-        try {
-          return { ok: true, data: await connectCalendar(true) };
-        } catch (error) {
-          const safeError = toRuntimeSafeError(error);
-          await patchState({ status: "google_disconnected", lastError: safeError });
-          return { ok: false, error: safeError };
-        }
+        return await connectGoogle(message.calendarId);
       }
       case "SYNC_NOW":
       case "CHECK_LECTIO": {
@@ -121,6 +151,7 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
       }
       case "DISCONNECT": {
         if (message.target === "google" || message.target === "all") {
+          cancelCalendarConnection();
           await connectCalendarAdapterDisconnect();
         }
         if (message.target === "all") {
@@ -333,14 +364,8 @@ function sanitizeSettings(input: Partial<SyncSettings>, current: SyncSettings): 
 }
 
 async function connectCalendarAdapterDisconnect(): Promise<void> {
-  if (__TARGET_BROWSER__ === "firefox") {
-    await disconnectFirefoxGoogle();
-  } else if (__TARGET_BROWSER__ === "chrome" && chrome.identity?.clearAllCachedAuthTokens) {
-    if (await isBraveBrowser()) await disconnectBraveGoogle();
-    await chrome.identity.clearAllCachedAuthTokens();
-  } else {
-    await browser.runtime.sendNativeMessage("dk.lectiosync.extension", { type: "DISCONNECT" }).catch(() => undefined);
-  }
+  const adapter = __TARGET_BROWSER__ === "safari" ? new SafariCalendarAdapter() : new GoogleCalendarAdapter();
+  await adapter.disconnect();
 }
 
 browser.runtime.onMessage.addListener((value: unknown, sender: RuntimeSender) => {
@@ -366,7 +391,7 @@ browser.runtime.onStartup.addListener(() => {
 
 browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
-    void refreshLectioConnection().then((state) => {
+    return refreshLectioConnection().then((state) => {
       if (state.lectioAccount) return runSync();
     }).catch(() => undefined);
   }

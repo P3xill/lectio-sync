@@ -1,6 +1,7 @@
 import browser from "webextension-polyfill";
 import { addWeeks, getFetchWeekOffsets, getIsoWeek, lectioWeekValue } from "./date";
 import { mapConcurrent } from "./concurrency";
+import { withBackgroundActivity } from "./background-activity";
 import { toCalendarEvent } from "./calendar-event";
 import { reconcileEvents } from "./reconcile";
 import { GoogleApiError, GoogleCalendarAdapter } from "./google-calendar";
@@ -37,6 +38,21 @@ type StaleSyncError = SafeError & { [STALE_SYNC]: true };
 let activeSync: Promise<SyncSummary> | undefined;
 let activeSyncCoversFullHorizon = false;
 let queuedFullSync: Promise<SyncSummary> | undefined;
+let calendarConnectionGeneration = 0;
+
+export function cancelCalendarConnection(): void {
+  calendarConnectionGeneration += 1;
+}
+
+export function getCalendarConnectionGeneration(): number {
+  return calendarConnectionGeneration;
+}
+
+export function assertCalendarConnectionGeneration(generation: number): void {
+  if (generation !== calendarConnectionGeneration) {
+    throw makeSafeError("UNKNOWN", "The calendar connection was cancelled. Close any remaining sign-in window before reconnecting.");
+  }
+}
 
 function calendarAdapter() {
   return __TARGET_BROWSER__ === "safari" ? new SafariCalendarAdapter() : new GoogleCalendarAdapter();
@@ -314,9 +330,15 @@ export async function scheduleNextSync(state?: ExtensionState): Promise<void> {
   });
 }
 
-export async function connectCalendar(interactive = true): Promise<ExtensionState> {
+export async function connectCalendar(interactive = true, existingCalendarId?: string): Promise<ExtensionState> {
+  const generation = calendarConnectionGeneration;
   const state = await getState();
-  const connected = await calendarAdapter().ensureConnected(interactive, state.googleCalendarId, state.settings.calendarColor);
+  assertCalendarConnectionGeneration(generation);
+  if (existingCalendarId && __TARGET_BROWSER__ === "safari") throw new Error("Use Apple Calendar setup in Safari.");
+  const connected = existingCalendarId
+    ? await new GoogleCalendarAdapter().useExistingCalendar(existingCalendarId, interactive)
+    : await calendarAdapter().ensureConnected(interactive, state.googleCalendarId, state.settings.calendarColor);
+  assertCalendarConnectionGeneration(generation);
   const nextStatus = state.lectioAccount ? "ready" as const : state.status;
   return patchState({
     googleCalendarId: connected.calendarId,
@@ -324,7 +346,7 @@ export async function connectCalendar(interactive = true): Promise<ExtensionStat
     ...(connected.calendarId !== state.googleCalendarId ? { fullSyncThrough: undefined } : {}),
     status: nextStatus,
     lastError: undefined
-  });
+  }, () => assertCalendarConnectionGeneration(generation));
 }
 
 export async function updateCalendarColor(calendarId: string, calendarColor: string): Promise<void> {
@@ -522,7 +544,9 @@ export function runSync(fullHorizon = false): Promise<SyncSummary> {
     return queued;
   }
 
-  const sync = performSync(fullHorizon);
+  const sync = __TARGET_BROWSER__ === "firefox"
+    ? withBackgroundActivity(() => performSync(fullHorizon), () => browser.runtime.getPlatformInfo())
+    : performSync(fullHorizon);
   activeSync = sync;
   activeSyncCoversFullHorizon = fullHorizon;
   void sync.then(

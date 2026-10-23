@@ -16,7 +16,7 @@ if (
 
 await mkdir(artifacts, { recursive: true });
 await rm(temporaryArchive, { force: true });
-const result = spawnSync("zip", ["-q", "-r", temporaryArchive, ".", "-x", "*.map", "*.svg", ".DS_Store"], {
+const result = spawnSync("zip", ["-q", "-r", temporaryArchive, ".", "-x", "*.map", "*.svg", "*.DS_Store"], {
   cwd: resolve("dist/firefox"),
   stdio: "inherit"
 });

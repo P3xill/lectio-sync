@@ -252,7 +252,7 @@ export async function setState(state: ExtensionState): Promise<void> {
   await browser.storage.local.set({ [STATE_KEY]: sanitizeState(state) });
 }
 
-export async function patchState(patch: Partial<ExtensionState>): Promise<ExtensionState> {
+export async function patchState(patch: Partial<ExtensionState>, beforeWrite?: () => void): Promise<ExtensionState> {
   const current = await getState();
   const next: ExtensionState = {
     ...current,
@@ -263,6 +263,7 @@ export async function patchState(patch: Partial<ExtensionState>): Promise<Extens
   // getState already validated unchanged snapshots. Revalidate only a supplied
   // replacement; avoid scanning thousands of entries for a status/settings patch.
   const sanitized = sanitizeState(next, patch.sourceSnapshots === undefined ? current.sourceSnapshots : undefined);
+  beforeWrite?.();
   await browser.storage.local.set({ [STATE_KEY]: sanitized });
   return sanitized;
 }

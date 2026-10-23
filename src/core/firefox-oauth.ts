@@ -147,6 +147,7 @@ async function authorizeInteractively(epoch: number): Promise<string> {
     code_challenge_method: "S256"
   }).toString();
 
+  assertCurrentAuthorizationEpoch(epoch);
   const resultUrl = await browser.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true });
   assertCurrentAuthorizationEpoch(epoch);
   if (!resultUrl) throw new Error("Google authorization was cancelled.");
@@ -194,11 +195,18 @@ async function obtainToken(interactive: boolean, epoch: number): Promise<string>
 }
 
 export async function getFirefoxGoogleToken(interactive: boolean): Promise<string> {
-  const pending = interactive ? interactiveTokenRequest : nonInteractiveTokenRequest;
-  if (pending) return pending;
+  if (interactiveTokenRequest) return interactiveTokenRequest;
+  if (!interactive && nonInteractiveTokenRequest) return nonInteractiveTokenRequest;
 
   const epoch = authorizationEpoch;
-  const request = obtainToken(interactive, epoch).finally(() => {
+  const silent = nonInteractiveTokenRequest;
+  const obtain = async () => {
+    if (silent) {
+      try { return await silent; } catch { /* A user request may now open consent. */ }
+    }
+    return obtainToken(interactive, epoch);
+  };
+  const request = obtain().finally(() => {
     if (interactive && interactiveTokenRequest === request) interactiveTokenRequest = undefined;
     if (!interactive && nonInteractiveTokenRequest === request) nonInteractiveTokenRequest = undefined;
   });
@@ -213,8 +221,8 @@ export function invalidateFirefoxAccessToken(token: string): void {
 
 export async function disconnectFirefoxGoogle(): Promise<void> {
   authorizationEpoch += 1;
-  interactiveTokenRequest = undefined;
-  nonInteractiveTokenRequest = undefined;
+  // The browser flow is still active until its promise settles. Forgetting it
+  // here allows reconnect to launch a second window while the first is open.
   const refreshToken = await readRefreshToken();
   const accessToken = cachedAccessToken?.token;
   await clearRefreshToken();

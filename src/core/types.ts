@@ -129,7 +129,7 @@ export type RuntimeMessage =
   | { type: "GET_POPUP_STATE" }
   | { type: "START_LECTIO_SETUP" }
   | { type: "LECTIO_PAGE_SEEN"; url: string; studentId?: string; schoolName?: string }
-  | { type: "CONNECT_GOOGLE" }
+  | { type: "CONNECT_GOOGLE"; calendarId?: string }
   | { type: "SYNC_NOW" }
   | { type: "CHECK_LECTIO" }
   | { type: "UPDATE_SETTINGS"; settings: Partial<SyncSettings> }
