@@ -94,11 +94,23 @@ The manifest uses Google's narrow `calendar.app.created` scope. Google documents
 
 ### Google Calendar reports `401 Invalid Credentials`
 
-This means Calendar rejected the access token. It does not by itself establish that the OAuth project is restricted to test users. Lectio Sync clears the rejected token, obtains a replacement through the current browser's OAuth flow, and retries that request once. Background sync never opens a consent window. Concurrent requests using the same adapter share recovery, and calendar ownership is preserved.
+Calendar rejected a request, but this error can also occur on calendar metadata or colour endpoints while event access still works. Version 0.3.2 verifies an existing calendar through a minimal event-list request and lets setup continue if Google denies the optional calendar-colour change. The dedicated calendar is reused; changing its colour explicitly in settings still reports any denial. You can change its colour directly in Google Calendar when the API does not permit it.
+
+For rejected event requests, Lectio Sync clears the rejected token, obtains a replacement through the current browser's OAuth flow, and retries that request once. Background sync never opens a consent window. Concurrent requests using the same adapter share recovery, and calendar ownership is preserved. A 401 does not by itself establish that the OAuth project is restricted to test users.
 
 If renewal fails or the replacement is also rejected, select **Reconnect Google Calendar** and grant access again using the Google account that owns the dedicated Lectio calendar. Error details retain Google's response for diagnosis. The details screen also offers reconnection instead of repeating a silent sync. An installed older release needs the updated extension to receive this recovery behavior.
 
 References: [Google Calendar API errors](https://developers.google.com/workspace/calendar/api/guides/errors), [Chrome Identity token cache](https://developer.chrome.com/docs/extensions/reference/api/identity).
+
+### Reuse an existing empty Lectio calendar
+
+If an older release left an empty `Lectio` calendar, or Google reports `Calendar usage limits exceeded`, version 0.3.2 can reconnect that calendar without creating another one:
+
+1. In Google Calendar, open **Settings**, select the existing `Lectio` calendar, then open **Integrate calendar** and copy its **Calendar ID**.
+2. In Lectio Sync, expand **Already have an empty Lectio calendar?**, paste the ID, and select **Use this calendar**. Use a secondary calendar previously created by Lectio Sync, not your primary calendar or an iCloud calendar.
+3. Sign into the Google account that owns it, then select **Sync now**.
+
+The extension verifies event access before saving the ID. An inaccessible or missing supplied calendar never triggers creation of a replacement. Only events managed by Lectio Sync are reconciled. This recovery keeps the narrow permission; it does not request permission to list all your calendars. Reinstalling or repeatedly reconnecting does not reset Google's calendar creation limits.
 
 ### Google blocks sign-in: app has not completed verification
 
@@ -134,6 +146,16 @@ npm run package:firefox
 ```
 
 The signed add-on must keep the `browser_specific_settings.gecko.id` value stable because Firefox derives its OAuth redirect identity from the add-on ID. The release ZIP is written to `artifacts/lectio-sync-firefox.zip`. Google's issued Desktop client credential is bundled because Google's token endpoint requires it; installed-app client credentials are not confidential, and no private server-side secret is used.
+
+### Reproducing the Firefox review package
+
+For Mozilla review, use Node.js 20.12 or later, npm, and `unzip`. Extract the source ZIP into a clean directory, run `npm ci`, and then run:
+
+```sh
+node scripts/reproduce-firefox.mjs /absolute/path/to/lectio-sync-firefox.zip
+```
+
+The script reads the installed-app OAuth metadata already bundled in the submitted binary, rebuilds Firefox, and verifies each packaged file byte for byte. It does not print or save the Desktop client credential separately and does not need a developer `.env` file. The Firefox sync task performs bounded runtime activity while network work is pending so it can finish after the popup closes; activity stops when the task settles and after at most ten minutes.
 
 ### Safari
 

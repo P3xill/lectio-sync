@@ -18,7 +18,7 @@ if (background.includes("REPLACE_WITH_BRAVE_WEB_OAUTH_CLIENT_ID")) {
 
 await mkdir(artifacts, { recursive: true });
 await rm(temporaryArchive, { force: true });
-const result = spawnSync("zip", ["-q", "-r", temporaryArchive, ".", "-x", "*.map", "*.svg", ".DS_Store"], {
+const result = spawnSync("zip", ["-q", "-r", temporaryArchive, ".", "-x", "*.map", "*.svg", "*.DS_Store"], {
   cwd: resolve("dist/chrome"),
   stdio: "inherit"
 });

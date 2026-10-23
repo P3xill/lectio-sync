@@ -5,6 +5,8 @@ import SafariServices
 
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     private static let calendarCreationLock = NSLock()
+    private static let connectionLifecycleLock = NSRecursiveLock()
+    private static var connectionGeneration = 0
     private let eventStore = EKEventStore()
     private let calendarName = "Lectio"
     private let markerScheme = "lectiosync"
@@ -21,10 +23,19 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         switch type {
         case "ENSURE_CALENDAR":
+            Self.connectionLifecycleLock.lock()
+            let generation = Self.connectionGeneration
+            Self.connectionLifecycleLock.unlock()
             let interactive = message["interactive"] as? Bool ?? false
             let calendarColor = message["calendarColor"] as? String
             requestCalendarAccess(interactive: interactive) { [weak self] result in
                 guard let self else { return }
+                Self.connectionLifecycleLock.lock()
+                defer { Self.connectionLifecycleLock.unlock() }
+                guard generation == Self.connectionGeneration else {
+                    self.complete(context, error: "The calendar connection was cancelled. Reconnect to try again.")
+                    return
+                }
                 switch result {
                 case .success:
                     do {
@@ -83,6 +94,9 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             }
 
         case "DISCONNECT":
+            Self.connectionLifecycleLock.lock()
+            Self.connectionGeneration += 1
+            Self.connectionLifecycleLock.unlock()
             complete(context, data: true)
 
         default:

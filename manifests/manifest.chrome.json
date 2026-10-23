@@ -1,10 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Lectio Sync",
-  "version": "0.3.1",
+  "version": "0.3.4",
   "description": "Privately sync Lectio through Google Calendar.",
   "minimum_chrome_version": "120",
-  "permissions": ["alarms", "identity", "notifications", "storage"],
+  "permissions": [
+    "alarms",
+    "identity",
+    "notifications",
+    "storage"
+  ],
   "host_permissions": [
     "https://www.lectio.dk/*",
     "https://www.googleapis.com/*",
@@ -19,8 +24,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.lectio.dk/lectio/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.lectio.dk/lectio/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -32,7 +41,9 @@
   },
   "oauth2": {
     "client_id": "__GOOGLE_OAUTH_CLIENT_ID__",
-    "scopes": ["https://www.googleapis.com/auth/calendar.app.created"]
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.app.created"
+    ]
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"

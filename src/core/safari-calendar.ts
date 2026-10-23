@@ -8,6 +8,11 @@ interface NativeResponse<T> {
   error?: string;
 }
 
+type CalendarConnection = { calendarId: string; calendarName: string };
+let connectionGeneration = 0;
+let connectionQueue: Promise<unknown> = Promise.resolve();
+const pendingConnections = new Map<string, Promise<CalendarConnection>>();
+
 function calendarBridgeError(message?: string): Error {
   return Object.assign(new Error(message ?? "The Safari calendar bridge is unavailable."), {
     code: "SAFARI_CALENDAR_REQUIRED",
@@ -25,7 +30,24 @@ export class SafariCalendarAdapter implements CalendarAdapter {
   }
 
   ensureConnected(interactive: boolean, currentCalendarId?: string, calendarColor?: string): Promise<{ calendarId: string; calendarName: string }> {
-    return this.send("ENSURE_CALENDAR", { interactive, currentCalendarId, calendarColor });
+    const generation = connectionGeneration;
+    const key = JSON.stringify([generation, interactive, currentCalendarId, calendarColor]);
+    const pending = pendingConnections.get(key);
+    if (pending) return pending;
+    const assertCurrent = () => {
+      if (generation !== connectionGeneration) throw calendarBridgeError("The Apple Calendar connection was cancelled. Reconnect to try again.");
+    };
+    const request = connectionQueue.then(async () => {
+      assertCurrent();
+      const connected = await this.send<CalendarConnection>("ENSURE_CALENDAR", { interactive, currentCalendarId, calendarColor });
+      assertCurrent();
+      return connected;
+    }).finally(() => {
+      if (pendingConnections.get(key) === request) pendingConnections.delete(key);
+    });
+    pendingConnections.set(key, request);
+    connectionQueue = request.catch(() => undefined);
+    return request;
   }
 
   async setColor(calendarId: string, calendarColor: string): Promise<void> {
@@ -47,6 +69,7 @@ export class SafariCalendarAdapter implements CalendarAdapter {
   }
 
   async disconnect(): Promise<void> {
+    connectionGeneration += 1;
     await this.send("DISCONNECT");
   }
 }

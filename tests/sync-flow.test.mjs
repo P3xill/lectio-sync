@@ -18,6 +18,23 @@ const bundle = await build({
   } }]
 });
 
+test('Runtime recovery validates the secondary calendar ID before any Google requests', async () => {
+  const h = await harness();
+  try {
+    for (const calendarId of ['primary', 'someone@gmail.com', {}, 'x'.repeat(513)]) {
+      assert.equal((await h.send({ type: 'CONNECT_GOOGLE', calendarId })).ok, false);
+    }
+    assert.equal(h.requests.length, 0);
+    const calendarId = 'recovered@group.calendar.google.com';
+    const result = await h.send({ type: 'CONNECT_GOOGLE', calendarId });
+    assert.equal(result.ok, true);
+    assert.equal(result.data.googleCalendarId, calendarId);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests[0].method, 'GET');
+    assert.ok(h.requests[0].url.includes('/events?'));
+  } finally { h.cleanup(); }
+});
+
 async function harness(mode = 'none', options = {}) {
   const data = { [STATE]: { nativeBridgeMode: mode, status: 'healthy', lectioAccount: account, googleCalendarId: 'calendar', settings: { horizonWeeks: 2 }, sourceSnapshots: {} } };
   if (options.credential) data[CREDENTIAL] = 'a'.repeat(43);
@@ -60,6 +77,7 @@ async function harness(mode = 'none', options = {}) {
   };
   const context = vm.createContext({ testBrowser: browser, chrome: {
     identity: { getAuthToken: async () => {
+      if (options.getAuthToken) return options.getAuthToken();
       if (options.authError) throw new Error(options.authError);
       return { token: 'fixture-token' };
     } },
@@ -69,6 +87,35 @@ async function harness(mode = 'none', options = {}) {
   vm.runInContext(bundle.outputFiles[0].text, context);
   const send = (message, sender = {}) => listeners.message(message, sender);
   return { data, alarms, events, requests, listeners, send, engine: context.testEngine, cleanup: () => { for (const timer of timers) clearTimeout(timer); } };
+}
+
+for (const succeeds of [true, false]) {
+  test(`Reopened popup observes one shared connection and its ${succeeds ? 'success' : 'failure'}`, async () => {
+    let finish, fail, tokenCalls = 0;
+    const login = new Promise((resolve, reject) => { finish = resolve; fail = reject; });
+    const h = await harness('none', { getAuthToken: () => { tokenCalls++; return login; } });
+    try {
+      const firstPopup = h.send({ type: 'CONNECT_GOOGLE' });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await h.send({ type: 'GET_POPUP_STATE' })).data.calendarConnectionPending, true);
+      const reopenedPopup = h.send({ type: 'CONNECT_GOOGLE' });
+      const differentCalendar = await h.send({ type: 'CONNECT_GOOGLE', calendarId: 'other@group.calendar.google.com' });
+      assert.equal(differentCalendar.ok, false);
+      assert.match(differentCalendar.error.message, /already in progress/);
+      assert.equal(tokenCalls, 1);
+      if (succeeds) finish({ token: 'fresh' });
+      else fail(new Error('The user did not approve access.'));
+      const results = await Promise.all([firstPopup, reopenedPopup]);
+      assert.equal(results[0].ok, succeeds);
+      assert.deepEqual(results[0], results[1]);
+      assert.equal(tokenCalls, 1, 'No queued duplicate login after the original completes');
+      const popup = (await h.send({ type: 'GET_POPUP_STATE' })).data;
+      assert.equal(popup.calendarConnectionPending, false);
+      assert.equal(popup.status, succeeds ? 'ready' : 'google_disconnected');
+      assert.equal('calendarConnectionPending' in h.data[STATE], false, 'Transient status must not survive browser restart');
+      assert.equal(h.requests.some(r => r.method === 'POST'), false);
+    } finally { h.cleanup(); }
+  });
 }
 
 for (const mode of ['pendingNativeActivation', 'nativeActive']) {

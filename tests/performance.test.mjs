@@ -209,7 +209,7 @@ test('A missing Google calendar is recreated with projected creation response', 
   const h = fixture(chrome, { state: { settings: { horizonWeeks: 2 } }, fetch: async (url, init) => {
     const parsed = new URL(url);
     if (parsed.hostname === 'www.lectio.dk') return new Response(url.includes('/aktivitet/') ? activity : schedule);
-    if (parsed.pathname.endsWith('/calendars/calendar')) return new Response('missing', { status: 404 });
+    if (parsed.pathname.endsWith('/calendars/calendar/events')) return new Response('missing', { status: 404 });
     if (init.method === 'POST' && parsed.pathname.endsWith('/calendars')) {
       assert.equal(parsed.searchParams.get('fields'), 'id');
       return Response.json({ id: 'replacement' });

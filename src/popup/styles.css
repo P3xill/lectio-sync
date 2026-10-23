@@ -217,3 +217,22 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+.existing-calendar-recovery {
+  margin-top: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.existing-calendar-recovery summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.existing-calendar-recovery .settings-form {
+  margin-top: 12px;
+}
+
+.existing-calendar-recovery input {
+  width: 100%;
+  min-width: 0;
+}

@@ -16,6 +16,11 @@ interface BraveNavigator {
 let cachedAccessToken: CachedAccessToken | undefined;
 let interactiveTokenRequest: Promise<string> | undefined;
 let nonInteractiveTokenRequest: Promise<string> | undefined;
+let authorizationEpoch = 0;
+
+function assertCurrentAuthorization(epoch: number): void {
+  if (epoch !== authorizationEpoch) throw new Error("Google authorization was disconnected.");
+}
 
 export function isValidBraveWebClientId(clientId: string): boolean {
   return GOOGLE_CLIENT_ID_PATTERN.test(clientId);
@@ -60,7 +65,8 @@ export function braveRedirectUrl(): string {
   return url.toString();
 }
 
-async function authorize(interactive: boolean): Promise<string> {
+async function authorize(interactive: boolean, epoch: number): Promise<string> {
+  assertCurrentAuthorization(epoch);
   if (!isValidBraveWebClientId(__GOOGLE_BRAVE_OAUTH_CLIENT_ID__)) {
     throw new Error("Brave Google OAuth is not configured with a valid Web application client ID.");
   }
@@ -85,6 +91,7 @@ async function authorize(interactive: boolean): Promise<string> {
     interactive,
     ...(!interactive ? { abortOnLoadForNonInteractive: false, timeoutMsForNonInteractive: 15_000 } : {})
   });
+  assertCurrentAuthorization(epoch);
   if (!resultUrl) throw new Error("Google authorization was cancelled.");
   const result = new URL(resultUrl);
   if (result.origin !== new URL(redirectUri).origin || result.pathname !== "/") {
@@ -106,20 +113,32 @@ async function authorize(interactive: boolean): Promise<string> {
   return token;
 }
 
-async function obtainToken(interactive: boolean): Promise<string> {
+async function obtainToken(interactive: boolean, epoch: number): Promise<string> {
+  assertCurrentAuthorization(epoch);
   if (cachedAccessToken && cachedAccessToken.expiresAt - EXPIRY_SKEW_MS > Date.now()) {
     return cachedAccessToken.token;
   }
-  return authorize(interactive);
+  return authorize(interactive, epoch);
 }
 
 export async function getBraveGoogleToken(interactive: boolean): Promise<string> {
-  const pending = interactive ? interactiveTokenRequest : nonInteractiveTokenRequest;
-  if (pending) return pending;
+  // A background sync must share a visible login, not race it with prompt=none.
+  if (interactiveTokenRequest) return interactiveTokenRequest;
+  if (!interactive && nonInteractiveTokenRequest) return nonInteractiveTokenRequest;
 
-  const request = obtainToken(interactive).finally(() => {
-    if (interactive) interactiveTokenRequest = undefined;
-    else nonInteractiveTokenRequest = undefined;
+  const epoch = authorizationEpoch;
+  const silent = nonInteractiveTokenRequest;
+  const obtain = async () => {
+    if (silent) {
+      // A user click may escalate a failed silent renewal, but only after its
+      // browser flow has finished. Concurrent clicks share this whole request.
+      try { return await silent; } catch { /* Continue with user consent. */ }
+    }
+    return obtainToken(interactive, epoch);
+  };
+  const request = obtain().finally(() => {
+    if (interactiveTokenRequest === request) interactiveTokenRequest = undefined;
+    if (nonInteractiveTokenRequest === request) nonInteractiveTokenRequest = undefined;
   });
   if (interactive) interactiveTokenRequest = request;
   else nonInteractiveTokenRequest = request;
@@ -131,6 +150,9 @@ export function invalidateBraveAccessToken(token: string): void {
 }
 
 export async function disconnectBraveGoogle(): Promise<void> {
+  authorizationEpoch += 1;
+  // Keep outstanding requests tracked until the browser settles them. Clearing
+  // the promise cannot close the browser's auth window and permits duplicates.
   const token = cachedAccessToken?.token;
   cachedAccessToken = undefined;
   if (!token) return;

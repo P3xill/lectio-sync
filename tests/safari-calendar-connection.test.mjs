@@ -5,6 +5,58 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+test('Safari native bridge cancels late permission replies across handler instances', { skip: process.platform !== 'darwin' }, async () => {
+  const source = await readFile('safari-native/SafariWebExtensionHandler.swift', 'utf8');
+  const ensure = source.slice(source.indexOf('        case "ENSURE_CALENDAR":'), source.indexOf('        case "LIST_EVENTS":'));
+  const disconnectStart = source.indexOf('        case "DISCONNECT":');
+  const disconnect = source.slice(disconnectStart, source.indexOf('        default:', disconnectStart));
+  const declarations = source.slice(source.indexOf('    private static let connectionLifecycleLock'), source.indexOf('    private let eventStore'));
+  // Execute the production request handlers with deferred permission replies;
+  // no EventKit access or changes to the user's calendars.
+  const swift = `
+import Foundation
+final class Context { var data: Any?; var error: String? }
+struct Calendar { let calendarIdentifier = "calendar"; let title = "Lectio" }
+final class Harness {
+${declarations}
+    var permissionReplies: [(Result<Void, Error>) -> Void] = []
+    var created = 0
+    func requestCalendarAccess(interactive: Bool, completion: @escaping (Result<Void, Error>) -> Void) { permissionReplies.append(completion) }
+    func ensureCalendar(currentIdentifier: String?, interactive: Bool, colorHex: String?) throws -> Calendar { created += 1; return Calendar() }
+    func complete(_ context: Context, data: Any) { context.data = data }
+    func complete(_ context: Context, error: String) { context.error = error }
+    func receive(_ type: String, context: Context, message: [String: Any] = [:]) {
+        switch type {
+${ensure}
+${disconnect}
+        default: fatalError("unexpected request")
+        }
+    }
+}
+let loginHandler = Harness()
+let disconnectHandler = Harness()
+let cancelled = Context()
+loginHandler.receive("ENSURE_CALENDAR", context: cancelled)
+disconnectHandler.receive("DISCONNECT", context: Context())
+loginHandler.permissionReplies.removeFirst()(.success(()))
+precondition(loginHandler.created == 0 && cancelled.data == nil)
+precondition(cancelled.error?.contains("cancelled") == true)
+let fresh = Context()
+loginHandler.receive("ENSURE_CALENDAR", context: fresh)
+loginHandler.permissionReplies.removeFirst()(.success(()))
+precondition(loginHandler.created == 1 && fresh.error == nil && fresh.data != nil)
+print("Native permission cancellation and fresh retry passed")
+`;
+  const directory = await mkdtemp(join(tmpdir(), 'lectio-native-lifecycle-'));
+  try {
+    const path = join(directory, 'test.swift');
+    await writeFile(path, swift);
+    const result = spawnSync('swift', [path], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Native permission cancellation and fresh retry passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('Safari calendar recovery handles stale IDs, multiple sources and ambiguous calendars without duplicates', { skip: process.platform !== 'darwin' }, async () => {
   const source = await readFile('safari-native/SafariWebExtensionHandler.swift', 'utf8');
   const method = source.slice(source.indexOf('    private func ensureCalendar('), source.indexOf('    private func apply(_ color:'))
