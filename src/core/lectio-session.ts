@@ -18,6 +18,7 @@ export interface LectioDiscoveryRequest {
 export interface LectioDiscoveryResponse {
   url: string;
   studentId?: string;
+  teacherId?: string;
   schoolName?: string;
 }
 

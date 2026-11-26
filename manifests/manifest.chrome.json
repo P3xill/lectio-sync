@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Lectio Sync",
-  "version": "0.3.4",
-  "description": "Privately sync Lectio through Google Calendar.",
+  "version": "0.3.7",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en_US",
   "minimum_chrome_version": "120",
   "permissions": [
     "alarms",

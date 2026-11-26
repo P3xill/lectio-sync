@@ -25,7 +25,11 @@ export function reconcileEvents(
 
   for (const event of desired) {
     const matches = existingBySource.get(event.sourceId) ?? [];
-    const current = matches.find((candidate) => candidate.id === event.id) ?? matches[0];
+    const activeMatches = matches.filter((candidate) => candidate.status !== "cancelled");
+    const current = activeMatches.find((candidate) => candidate.id === event.id)
+      ?? activeMatches[0]
+      ?? matches.find((candidate) => candidate.id === event.id)
+      ?? matches[0];
     nextSnapshots[event.sourceId] = {
       fingerprint: event.fingerprint,
       missingStreak: 0,
@@ -42,13 +46,16 @@ export function reconcileEvents(
     }
 
     for (const duplicate of matches) {
-      if (duplicate !== current) {
+      if (duplicate !== current && duplicate.status !== "cancelled") {
         operations.push({ kind: "delete", eventId: duplicate.id, sourceId: duplicate.sourceId });
       }
     }
   }
 
   for (const current of existing) {
+    // Google retains deleted event records. They need no further deletion or
+    // missing-source history, but remain available above for lesson restoration.
+    if (current.status === "cancelled") continue;
     if (desiredBySource.has(current.sourceId)) continue;
     const previous = previousSnapshots[current.sourceId];
     const missingStreak = (previous?.missingStreak ?? 0) + 1;

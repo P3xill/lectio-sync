@@ -1,3 +1,5 @@
+import { lectioIdentityKey } from "./account";
+import type { LectioAccount } from "./types";
 import browser from "webextension-polyfill";
 import { addWeeks, getFetchWeekOffsets, getIsoWeek, lectioWeekValue } from "./date";
 import { mapConcurrent } from "./concurrency";
@@ -28,7 +30,7 @@ const STALE_SYNC = Symbol("stale-sync");
 
 interface SyncIdentity {
   schoolId: string;
-  studentId: string;
+  accountKey: string;
   lectioConnectedAt: string;
   googleCalendarId: string;
 }
@@ -71,7 +73,7 @@ function syncIdentity(state: ExtensionState): SyncIdentity | undefined {
   if (!state.lectioAccount || !state.googleCalendarId) return undefined;
   return {
     schoolId: state.lectioAccount.schoolId,
-    studentId: state.lectioAccount.studentId,
+    accountKey: lectioIdentityKey(state.lectioAccount),
     lectioConnectedAt: state.lectioAccount.connectedAt,
     googleCalendarId: state.googleCalendarId
   };
@@ -82,7 +84,7 @@ function hasSyncIdentity(state: ExtensionState, expected: SyncIdentity): boolean
   return Boolean(
     current
     && current.schoolId === expected.schoolId
-    && current.studentId === expected.studentId
+    && current.accountKey === expected.accountKey
     && current.lectioConnectedAt === expected.lectioConnectedAt
     && current.googleCalendarId === expected.googleCalendarId
   );
@@ -147,13 +149,14 @@ function weekWindow(baseMonday: Date, offsets: number[]) {
   };
 }
 
-async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: Date, fetchLectioPage: LectioPageFetcher): Promise<LectioEvent[]> {
+async function fetchScheduleWeek(account: LectioAccount, weekDate: Date, fetchLectioPage: LectioPageFetcher): Promise<LectioEvent[]> {
   const params = new URLSearchParams({
-    type: "elev",
-    elevid: studentId,
+    ...(account.teacherId !== undefined
+      ? { type: "laerer", laererid: account.teacherId }
+      : { type: "elev", elevid: account.studentId }),
     week: lectioWeekValue(weekDate)
   });
-  const url = `https://www.lectio.dk/lectio/${encodeURIComponent(schoolId)}/SkemaNy.aspx?${params}`;
+  const url = `https://www.lectio.dk/lectio/${encodeURIComponent(account.schoolId)}/SkemaNy.aspx?${params}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response;
     try {
@@ -178,7 +181,18 @@ async function fetchScheduleWeek(schoolId: string, studentId: string, weekDate: 
     try {
       // parse5 is substantial; initialize it only when a sync has HTML to parse.
       const { parseLectioSchedule } = await import("./parser");
-      return parseLectioSchedule(response.html, response.url).events;
+      const parsed = parseLectioSchedule(response.html, response.url);
+      if (response.url) {
+        const returned = new URL(response.url);
+        const expected = new URL(url);
+        if (returned.origin !== expected.origin
+          || returned.pathname.toLowerCase() !== expected.pathname.toLowerCase()
+          || ["type", "elevid", "laererid", "week"].some((key) =>
+            returned.searchParams.get(key) !== expected.searchParams.get(key))) {
+          throw new Error("Lectio returned a different timetable than requested.");
+        }
+      }
+      return parsed.events;
     } catch (error) {
       if (lectioParserErrorCode(error) === "AUTH_REQUIRED") {
         throw makeSafeError("LECTIO_AUTH_REQUIRED", "Your Lectio login has expired.");
@@ -241,6 +255,13 @@ async function fetchActivityDetails(event: LectioEvent, schoolId: string, fetchL
   try {
     const { parseLectioActivityDetails } = await import("./parser");
     const details = parseLectioActivityDetails(response.html, response.url || url);
+    if (response.url && !trustedActivityUrl(response.url, schoolId, event.sourceId)) {
+      throw new Error("Lectio returned a different activity than requested.");
+    }
+    // Activity pages may describe a former hold. The personal timetable remains
+    // authoritative; do not replace its title/notes with another hold's details.
+    if (details.className && event.className
+      && details.className.replace(/\s+/g, " ").trim() !== event.className.replace(/\s+/g, " ").trim()) return event;
     return {
       ...event,
       title: details.title ?? event.title,
@@ -395,8 +416,7 @@ async function performSync(fullHorizon = false): Promise<SyncSummary> {
     );
     const fetchLectioPage = createLectioPageFetcher();
     const weeks = await mapConcurrent(offsets, 4, (offset) => fetchScheduleWeek(
-      lectioAccount.schoolId,
-      lectioAccount.studentId,
+      lectioAccount,
       addWeeks(baseMonday, offset),
       fetchLectioPage
     ));

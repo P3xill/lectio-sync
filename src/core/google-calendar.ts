@@ -410,9 +410,15 @@ export class GoogleCalendarAdapter implements CalendarAdapter {
             summary.updated += 1;
           } else {
             await waitForWriteSlot();
-            await this.request(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(operation.eventId)}`, {
-              method: "DELETE"
-            });
+            try {
+              await this.request(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(operation.eventId)}`, {
+                method: "DELETE"
+              });
+            } catch (error) {
+              // Another sync or the user may have deleted it since listing.
+              // Google's 410 on DELETE means the desired state is already met.
+              if (!(error instanceof GoogleApiError) || error.status !== 410) throw error;
+            }
             summary.deleted += 1;
           }
         } catch (error) {

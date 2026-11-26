@@ -82,3 +82,6 @@ popup = popup
 await writeFile(`${outdir}/popup.html`, popup);
 
 await cp("public/icons", `${outdir}/icons`, { recursive: true });
+if (target === "chrome") {
+  await cp("manifests/chrome-locales", `${outdir}/_locales`, { recursive: true });
+}

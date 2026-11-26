@@ -1,5 +1,5 @@
 import browser from "webextension-polyfill";
-import { schoolIdFromUrl, schoolNameFromDocument, studentIdFromDocument } from "./core/account";
+import { schoolIdFromUrl, schoolNameFromDocument, accountFromDocument } from "./core/account";
 import {
   parseLectioPageRequest,
   responseFromLectioFetch,
@@ -8,13 +8,13 @@ import {
 import type { RuntimeMessage } from "./core/types";
 
 const schoolId = schoolIdFromUrl(location.href);
-const studentId = studentIdFromDocument(document);
+const account = accountFromDocument(document);
 
-if (schoolId && studentId) {
+if (schoolId && account) {
   const message: RuntimeMessage = {
     type: "LECTIO_PAGE_SEEN",
     url: location.href,
-    studentId,
+    ...account,
     schoolName: schoolNameFromDocument(document)
   };
   void browser.runtime.sendMessage(message).catch(() => undefined);
@@ -24,7 +24,7 @@ browser.runtime.onMessage.addListener((value: unknown) => {
   if (typeof value === "object" && value !== null && (value as { type?: unknown }).type === "LECTIO_DISCOVER_ACCOUNT") {
     return Promise.resolve({
       url: location.href,
-      studentId: studentIdFromDocument(document),
+      ...accountFromDocument(document),
       schoolName: schoolNameFromDocument(document)
     } satisfies LectioDiscoveryResponse);
   }

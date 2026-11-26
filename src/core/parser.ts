@@ -25,6 +25,7 @@ export interface ParsedSchedule {
 export interface ParsedActivityDetails {
   title?: string;
   note?: string;
+  className?: string;
   structuralMarkers: number;
 }
 
@@ -328,6 +329,28 @@ function eventTitle(node: Element, lines: string[]): string {
   return boundedText(titleLine, 300) ?? "Lectio module";
 }
 
+// Prefer the row the user sees when tooltip and visible metadata disagree.
+// Read hold/teacher/room together so fields from different holds are not mixed.
+function visibleBrickFields(node: Element): { title: string; className: string; teacher: string; location: string } | undefined {
+  const content = findFirst(node, (element) => hasClass(element, "s2skemabrikcontent"));
+  if (!content) return undefined;
+  const renderedText = (part: Node): string => {
+    if (isElement(part) && part.tagName === "br") return "\n";
+    if ("value" in part) return part.value;
+    return children(part).map(renderedText).join("");
+  };
+  const lines = cleanText(renderedText(content)).split("\n").filter(Boolean);
+  const row = lines[0]?.split(/\s*[•·]\s*/);
+  if (!row || row.length !== 3 || row.some((value) => !value.trim())) return undefined;
+  const [className, teacher, location] = row as [string, string, string];
+  return {
+    title: boundedText(lines.slice(1).join("\n"), 300) ?? boundedText(lines[0], 300)!,
+    className: boundedText(className, 300)!,
+    teacher: boundedText(teacher, 300)!,
+    location: boundedText(location, 300)!
+  };
+}
+
 function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefined {
   if (!ancestors.some((ancestor) => ancestor.tagName === "table" && hasClass(ancestor, "s2skema"))) return undefined;
   const tooltip = cleanText(getAttr(node, "data-tooltip") ?? getAttr(node, "data-additionalinfo") ?? "");
@@ -353,16 +376,17 @@ function parseBrick(node: Element, ancestors: Element[]): LectioEvent | undefine
     /^Lektier\s*:/i,
     /^Øvrigt indhold\s*:/i
   ]);
+  const visible = visibleBrickFields(node);
 
   return {
     sourceId,
-    title: eventTitle(node, lines),
+    title: visible?.title ?? eventTitle(node, lines),
     note,
     start: dateTime.start,
     end: dateTime.end,
-    className: boundedText(valueAfterLabel(lines, /^Hold\s*:/i), 300),
-    location: boundedText(valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i), 300),
-    teacher: boundedText(valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i), 300),
+    className: visible?.className ?? boundedText(valueAfterLabel(lines, /^Hold\s*:/i), 300),
+    location: visible?.location ?? boundedText(valueAfterLabel(lines, /^Lokale(?:r)?\s*:/i), 300),
+    teacher: visible?.teacher ?? boundedText(valueAfterLabel(lines, /^Lærer(?:e)?\s*:/i), 300),
     homework,
     status,
     sourceUrl: href ? new URL(href, "https://www.lectio.dk").toString() : undefined
@@ -416,6 +440,7 @@ export function parseLectioActivityDetails(
   return {
     title: boundedText(title, 300),
     note: boundedText(note, 5_000),
+    className: valueBesideLabel(document, /^hold\s*:?$/i, readText),
     structuralMarkers
   };
 }

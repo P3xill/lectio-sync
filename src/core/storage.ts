@@ -1,3 +1,4 @@
+import { lectioIdentity } from "./account";
 import browser from "webextension-polyfill";
 import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./settings";
 import {
@@ -106,15 +107,13 @@ function sanitizeLectioAccount(value: unknown, fallbackConnectedAt?: string): Le
   const schoolId = typeof value.schoolId === "string" && /^\d{1,32}$/.test(value.schoolId)
     ? value.schoolId
     : undefined;
-  const studentId = typeof value.studentId === "string" && /^\d{1,32}$/.test(value.studentId)
-    ? value.studentId
-    : undefined;
-  if (!schoolId || !studentId) return undefined;
+  const identity = lectioIdentity(value);
+  if (!schoolId || !identity) return undefined;
 
   const schoolName = boundedString(value.schoolName, 120);
   return {
     schoolId,
-    studentId,
+    ...identity,
     ...(schoolName ? { schoolName } : {}),
     connectedAt: validTimestamp(value.connectedAt)
       ?? fallbackConnectedAt

@@ -9,12 +9,15 @@ export type SyncStatus =
 
 export type CancellationMode = "mark" | "remove";
 
-export interface LectioAccount {
+export type LectioIdentity =
+  | { studentId: string; teacherId?: never }
+  | { teacherId: string; studentId?: never };
+
+export type LectioAccount = LectioIdentity & {
   schoolId: string;
-  studentId: string;
   schoolName?: string;
   connectedAt: string;
-}
+};
 
 export interface SyncSettings {
   intervalMinutes: number;
@@ -128,7 +131,7 @@ export type RuntimeMessage =
   | { type: "GET_STATE" }
   | { type: "GET_POPUP_STATE" }
   | { type: "START_LECTIO_SETUP" }
-  | { type: "LECTIO_PAGE_SEEN"; url: string; studentId?: string; schoolName?: string }
+  | { type: "LECTIO_PAGE_SEEN"; url: string; studentId?: string; teacherId?: string; schoolName?: string }
   | { type: "CONNECT_GOOGLE"; calendarId?: string }
   | { type: "SYNC_NOW" }
   | { type: "CHECK_LECTIO" }

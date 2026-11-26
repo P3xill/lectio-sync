@@ -9,7 +9,7 @@ export const schedule = `<table class="s2skema"><tr><td data-date="2026-09-30"><
 export const activity = `<div id="NiceFeaturesForAktivitetDialog"><h1 id="activity-title">Matrices</h1><p id="activity-note">Read chapter 2</p></div>`;
 
 export async function compileFixture(root = 'src', target = 'chrome', options = {}) {
-  const modules = ['parser', 'storage', 'calendar-event', 'calendar-adapter', 'crypto', 'google-calendar', 'safari-calendar', 'lectio-session', 'sync-engine', 'date'];
+  const modules = ['reconcile', 'parser', 'storage', 'calendar-event', 'calendar-adapter', 'crypto', 'google-calendar', 'safari-calendar', 'lectio-session', 'sync-engine', 'date'];
   if (root === 'src') modules.push('concurrency', 'brave-oauth', 'firefox-oauth');
   const contents = options.startup ? `import ${JSON.stringify(resolve(root, "background.ts"))};` : modules.map((name, i) => `import * as m${i} from ${JSON.stringify(resolve(root, 'core', name + '.ts'))};`).join('\n')
     + `\nglobalThis.api = Object.assign({}, ${modules.map((_, i) => 'm' + i).join(',')});`;

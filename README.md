@@ -4,15 +4,15 @@
 - Privacy: https://lectio-sync.johannespeulicke.chatgpt.site/privacy
 - Support: https://lectio-sync.johannespeulicke.chatgpt.site/support
 
-Lectio Sync is an open-source, local-first desktop browser extension that keeps a student's Lectio timetable in a dedicated calendar. It supports Chrome through Chrome Identity, Brave through a browser-managed Web OAuth callback, Firefox through a PKCE-protected installed-app OAuth flow, and Safari through a small EventKit bridge generated as an Xcode app extension.
+Lectio Sync is an open-source, local-first desktop browser extension that keeps a student's or teacher's Lectio timetable in a dedicated calendar. It supports Chrome through Chrome Identity, Brave through a browser-managed Web OAuth callback, Firefox through a PKCE-protected installed-app OAuth flow, and Safari through a small EventKit bridge generated as an Xcode app extension.
 
-There is no Lectio password form, no MitID automation, and no hosted backend. The student signs into the real `lectio.dk` website. The extension then reuses that browser session for read-only timetable requests.
+There is no Lectio password form, no MitID automation, and no hosted backend. The user signs into the real `lectio.dk` website. The extension then reuses that browser session for read-only timetable requests.
 
 This extension operates independently of the separate Lectio Sync macOS app. It manages its own calendar connection, settings, and synchronization.
 
 ## What works
 
-- Detects the student's school and student ID after a normal Lectio login.
+- Detects the school and student or teacher ID from the personal timetable after a normal Lectio login.
 - Reads linked normal-lesson activity pages to include their activity title and note while excluding attached-document contents.
 - Checks current and upcoming timetable weeks at a user-selected interval from 5 minutes to 24 hours while the browser can run extension alarms.
 - Inserts, updates, cancels, and safely removes events in one dedicated calendar.
@@ -25,11 +25,19 @@ This extension operates independently of the separate Lectio Sync macOS app. It 
 ## User flow
 
 1. Install the extension and select **Start setup**.
-2. Sign into the real Lectio site with MitID.
+2. Sign into the real Lectio site with MitID and open your own **Skema** (students and teachers).
 3. Return to the extension and connect the calendar.
 4. Run the first sync. Later checks are automatic while the browser is able to run the extension.
 
-When the Lectio session expires, the extension pauses and asks the student to sign in again. Existing calendar events are left untouched.
+When the Lectio session expires, the extension pauses and asks the user to sign in again. Existing calendar events are left untouched.
+
+### Teacher timetables in Firefox
+
+Teacher timetables use `type=laerer&laererid=…`; student timetables use `type=elev&elevid=…`. Open your own timetable after signing in. Discovery prefers the personal **Skema** navigation link and does not infer your identity from arbitrary teacher/student links on a page.
+
+Both use the same synchronization: moved lessons update the existing calendar event, and cancelled lessons are marked or removed according to settings. Updates occur on the next successful scheduled check while the desktop browser is running and the Lectio session is valid; they are not instant push updates.
+
+Teacher support is covered by synthetic timetable fixtures and Google API mocks, including Firefox moves, cancellations, and reinstatement. It has not yet been verified in a live teacher account. An existing store installation needs an updated extension release to receive this support.
 
 ### Using Apple Calendar
 
@@ -38,6 +46,14 @@ This version of Lectio Sync stores timetable events in a dedicated **Google Cale
 To see the Lectio calendar in Apple Calendar, add the same Google account to Apple Calendar on every Mac, iPhone, and iPad where it should appear, enable calendar syncing for that account, and make sure the `Lectio` calendar is visible. Using the same Apple Account alone is not sufficient because the calendar belongs to Google, not iCloud.
 
 ## Development
+
+### Updating to 0.3.7 after incorrect subjects appeared
+
+After installing the update, reload Lectio and open your personal **Skema** using Lectio's navigation, then select **Sync now**. Account discovery prefers that personal timetable over other students' links. The visible hold, teacher and room take precedence over conflicting tooltip metadata, and responses for another timetable or activity are rejected before calendar writes.
+
+Existing matching events are updated. Obsolete managed lessons are removed after two successful observations that they are missing; allow the next scheduled check or run **Sync now** again. Updating invalidates future-week coverage so the next check reads the full configured horizon. No calendar reset is required.
+
+These cases are covered with synthetic timetables and mocked Google Calendar responses. The reported student's authenticated Lectio page and live calendar have not been available for verification.
 
 Requirements: Node.js 20.12 or later. Safari additionally requires macOS and Xcode.
 

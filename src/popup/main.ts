@@ -18,7 +18,7 @@ let transientIsError = false;
 let existingCalendarIdDraft = "";
 let browserApi: typeof browser | undefined;
 let calendarConnectionPending = false;
-let connectionPollTimer: ReturnType<typeof setTimeout> | undefined;
+let progressPollTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isSafari = __TARGET_BROWSER__ === "safari";
 const calendarStatusLabel = isSafari ? "Google via Apple Calendar" : "Google Calendar";
@@ -348,14 +348,16 @@ function healthyView(): HTMLElement {
     openSubView("settings", settingsActionFocusSelector);
   });
   settingsAction.setAttribute("data-focus-key", "settings-action");
-  const actions = node("div", { className: "button-row" },
-    actionButton(syncing ? "Syncing…" : "Sync now", "primary", async () => {
+  const syncAction = actionButton(syncing ? "Syncing…" : "Sync now", "primary", async () => {
       try {
         await send({ type: "SYNC_NOW" });
       } finally {
         state = await send<ExtensionState>({ type: "GET_POPUP_STATE" });
       }
-    }),
+    });
+  syncAction.disabled = syncing;
+  const actions = node("div", { className: "button-row" },
+    syncAction,
     settingsAction
   );
   return node("div", { className: "popup-shell" }, header(), node("main", { className: "content status-content" },
@@ -585,7 +587,7 @@ function render(): void {
   else if (state.lectioAccount && state.googleCalendarId && ["healthy", "ready", "syncing"].includes(state.status)) root.append(healthyView());
   else root.append(setupView());
   focusPendingTarget();
-  scheduleConnectionPoll();
+  scheduleProgressPoll();
 }
 
 function connectionPendingView(): HTMLElement {
@@ -604,17 +606,18 @@ function connectionPendingView(): HTMLElement {
   );
 }
 
-function scheduleConnectionPoll(): void {
-  if (connectionPollTimer) clearTimeout(connectionPollTimer);
-  if (!calendarConnectionPending || isPreview()) return;
-  connectionPollTimer = setTimeout(() => {
-    connectionPollTimer = undefined;
+function scheduleProgressPoll(): void {
+  if (progressPollTimer) clearTimeout(progressPollTimer);
+  if ((!calendarConnectionPending && state.status !== "syncing") || isPreview()) return;
+  progressPollTimer = setTimeout(() => {
+    progressPollTimer = undefined;
+    const wasConnecting = calendarConnectionPending;
     void send<ExtensionState>({ type: "GET_POPUP_STATE" }).then(next => {
       state = next;
-      if (!calendarConnectionPending) view = "main";
+      if (wasConnecting && !calendarConnectionPending) view = "main";
       render();
     }).catch(() => {
-      transientMessage = "Could not check the connection. Close and reopen Lectio Sync to check again.";
+      transientMessage = "Could not check progress. Close and reopen Lectio Sync to check again.";
       transientIsError = true;
       render();
     });
