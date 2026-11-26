@@ -1,3 +1,4 @@
+import { lectioIdentityKey } from "./account";
 import { COPENHAGEN_TIME_ZONE } from "./date";
 import { fingerprint, stableGoogleEventId } from "./crypto";
 import type { CalendarEventInput, LectioAccount, LectioEvent, SyncSettings } from "./types";
@@ -30,7 +31,7 @@ export async function toCalendarEvent(
   };
 
   const [id, eventFingerprint] = await Promise.all([
-    stableGoogleEventId(account.schoolId, account.studentId, source.sourceId),
+    stableGoogleEventId(account.schoolId, lectioIdentityKey(account), source.sourceId),
     fingerprint(comparable)
   ]);
   return {

@@ -4,7 +4,7 @@ Lectio Sync has no analytics, advertising, telemetry, crash-reporting service, o
 
 ## Stored locally
 
-- Lectio school ID, student ID, optional school name, and connection time.
+- Lectio school ID, student or teacher ID, optional school name, and connection time.
 - Sync settings, last attempt/success/error timestamps, and the boundary through which complete timetable coverage was confirmed.
 - Event source IDs, non-reversible content fingerprints, missing counters, and rotation state used for safe reconciliation.
 - The identifier and display name of the dedicated calendar.
@@ -14,7 +14,7 @@ The extension does not store Lectio page HTML, MitID data, Lectio cookies, Googl
 
 ## Sent to services
 
-- Lectio receives normal authenticated timetable requests from the student's browser.
+- Lectio receives normal authenticated timetable requests from the user's browser.
 - Chrome, Brave, and Firefox send the selected timetable fields to Google Calendar because the user explicitly connects it.
 - Safari sends the selected timetable fields to Apple EventKit, which writes them to the Google calendar configured in Apple Calendar.
 

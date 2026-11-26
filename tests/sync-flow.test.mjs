@@ -158,6 +158,17 @@ test('Standalone extension syncs a parsed Lectio event to Google and a repeat sy
   } finally { h.cleanup(); }
 });
 
+test('An extension update invalidates horizon coverage so future lessons are read again', async () => {
+  const h = await harness();
+  try {
+    h.data[STATE].fullSyncThrough = '2027-12-01T00:00:00.000Z';
+    h.listeners.installed();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.data[STATE].fullSyncThrough, undefined);
+    assert.ok(h.alarms.has(alarm));
+  } finally { h.cleanup(); }
+});
+
 for (const authError of [
   'Access blocked: Lectio Google calendar integration has not completed the Google verification process',
   'The app is currently being tested and can only be accessed by developer-approved testers',
@@ -262,5 +273,25 @@ test('Popup state omits reconciliation snapshots without removing stored history
     assert.equal('nativeBridgeMode' in h.data[STATE], false);
     const full = await h.send({ type: 'GET_STATE' });
     assert.equal(full.data.sourceSnapshots['absid:123'].missingStreak, 1);
+  } finally { h.cleanup(); }
+});
+
+test('Teacher discovery connects, switches identity safely, and rejects ambiguous IDs', async () => {
+  const h = await harness();
+  try {
+    const url = 'https://www.lectio.dk/lectio/148/SkemaNy.aspx?type=laerer&laererid=42';
+    h.data[STATE].sourceSnapshots = { old: { fingerprint: 'old', missingStreak: 1, lastSeenAt: account.connectedAt } };
+    h.data[STATE].lastSuccessAt = account.connectedAt;
+    const result = await h.send({ type: 'LECTIO_PAGE_SEEN', url, teacherId: '42' }, { url });
+    assert.equal(result.ok, true);
+    assert.equal(h.data[STATE].lectioAccount.teacherId, '42');
+    assert.equal(h.data[STATE].lectioAccount.studentId, undefined);
+    assert.equal(h.data[STATE].lastSuccessAt, undefined);
+    assert.deepEqual(h.data[STATE].sourceSnapshots, {});
+    for (const teacherId of ['invalid', '9'.repeat(33), 42]) {
+      assert.equal((await h.send({ type: 'LECTIO_PAGE_SEEN', url, teacherId }, { url })).ok, false);
+    }
+    assert.equal((await h.send({ type: 'LECTIO_PAGE_SEEN', url, teacherId: '42', studentId: '42' }, { url })).ok, false);
+    assert.equal(h.data[STATE].lectioAccount.teacherId, '42');
   } finally { h.cleanup(); }
 });

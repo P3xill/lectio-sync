@@ -1,3 +1,5 @@
+import { lectioIdentity, lectioIdentityKey } from "./core/account";
+import type { LectioIdentity } from "./core/types";
 import browser from "webextension-polyfill";
 import { schoolIdFromUrl } from "./core/account";
 import { sanitizeCalendarColor, sanitizeIntervalMinutes } from "./core/settings";
@@ -80,12 +82,15 @@ function parseRuntimeMessage(value: unknown): RuntimeMessage | undefined {
         typeof message.url !== "string"
         || message.url.length > 2_048
         || (message.studentId !== undefined && (typeof message.studentId !== "string" || !/^\d{1,32}$/.test(message.studentId)))
+        || (message.teacherId !== undefined && (typeof message.teacherId !== "string" || !/^\d{1,32}$/.test(message.teacherId)))
+        || (message.studentId !== undefined && message.teacherId !== undefined)
         || (message.schoolName !== undefined && (typeof message.schoolName !== "string" || message.schoolName.length > 120))
       ) return undefined;
       return {
         type: message.type,
         url: message.url,
         studentId: message.studentId as string | undefined,
+        teacherId: message.teacherId as string | undefined,
         schoolName: message.schoolName as string | undefined
       };
     case "UPDATE_SETTINGS":
@@ -121,8 +126,9 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
         if (!senderUrl || schoolId !== schoolIdFromUrl(message.url)) {
           throw new Error("Lectio account discovery came from an untrusted page.");
         }
-        if (!schoolId || !message.studentId) return { ok: true };
-        const next = await connectLectioAccount(schoolId, message.studentId, message.schoolName);
+        const identity = lectioIdentity(message);
+        if (!schoolId || !identity) return { ok: true };
+        const next = await connectLectioAccount(schoolId, identity, message.schoolName);
         return { ok: true, data: next };
       }
       case "CONNECT_GOOGLE": {
@@ -179,19 +185,19 @@ async function handleMessage(message: RuntimeMessage, sender: RuntimeSender = {}
 
 async function connectLectioAccount(
   schoolId: string,
-  studentId: string,
+  identity: LectioIdentity,
   schoolName?: string
 ) {
   const state = await getState();
   const currentAccount = state.lectioAccount;
   const accountChanged = currentAccount?.schoolId !== schoolId
-    || currentAccount?.studentId !== studentId;
+    || !currentAccount || lectioIdentityKey(currentAccount) !== lectioIdentityKey(identity);
   if (!accountChanged && state.status !== "lectio_expired" && currentAccount?.schoolName === schoolName) {
     return state;
   }
   const account = {
     schoolId,
-    studentId,
+    ...identity,
     schoolName,
     connectedAt: accountChanged
       ? new Date().toISOString()
@@ -250,11 +256,10 @@ async function discoverLectioAccount(tab: LectioTab | undefined): Promise<boolea
     if (
       !response
       || schoolIdFromUrl(response.url) !== schoolId
-      || typeof response.studentId !== "string"
-      || !/^\d{1,32}$/.test(response.studentId)
+      || !lectioIdentity(response)
       || (response.schoolName !== undefined && (typeof response.schoolName !== "string" || response.schoolName.length > 120))
     ) return false;
-    await connectLectioAccount(schoolId, response.studentId, response.schoolName);
+    await connectLectioAccount(schoolId, lectioIdentity(response)!, response.schoolName);
     return true;
   } catch {
     // The tab may predate this extension build. Reloading it injects the current content script.
@@ -380,7 +385,9 @@ browser.runtime.onMessage.addListener((value: unknown, sender: RuntimeSender) =>
 });
 
 browser.runtime.onInstalled.addListener(() => {
-  void scheduleNextSync();
+  // Re-read the complete horizon after an update so parser fixes also repair
+  // previously synchronized future modules rather than waiting for rotation.
+  void patchState({ fullSyncThrough: undefined }).then(scheduleNextSync);
 });
 
 browser.runtime.onStartup.addListener(() => {
